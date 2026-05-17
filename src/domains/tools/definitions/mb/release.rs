@@ -4,7 +4,6 @@
 //! get tracks/recordings in a release, and find all versions of a release group.
 
 use futures::FutureExt;
-use futures::future::BoxFuture;
 use musicbrainz_rs::{
     Fetch, Search,
     entity::release::{Release, ReleaseSearchQuery},
@@ -21,7 +20,7 @@ use tracing::{debug, error, info};
 
 use super::common::{
     default_limit, error_result, extract_year, format_duration, get_artist_name, is_mbid,
-    structured_result, validate_limit,
+    release_group_primary_type_str, structured_result, validate_limit,
 };
 
 /// Structured output for release search results.
@@ -210,20 +209,7 @@ impl MbReleaseTool {
             .join()
             .map_err(|_| "Thread panicked during release search".to_string())?;
 
-        let mut response = serde_json::json!({
-            "content": result.content,
-            "isError": result.is_error.unwrap_or(false)
-        });
-
-        // Include structured_content if present
-        if let Some(structured) = result.structured_content {
-            response.as_object_mut().unwrap().insert(
-                "structuredContent".to_string(),
-                structured,
-            );
-        }
-
-        Ok(response)
+        crate::domains::tools::http_response::tool_result_to_json(result)
     }
 
     /// Create a Tool model for this tool (metadata).
@@ -264,59 +250,6 @@ impl MbReleaseTool {
                 Ok(result)
             }
             .boxed()
-        })
-    }
-
-    /// Main handler for HTTP transport.
-    #[deprecated(note = "Use http_handler() instead")]
-    pub fn handle_http(params: MbReleaseParams) -> BoxFuture<'static, CallToolResult> {
-        Box::pin(async move {
-            let search_type = params.search_type.clone();
-            let query = params.query.clone();
-            let limit = validate_limit(params.limit);
-
-            let result = std::thread::spawn(move || {
-                match search_type.as_str() {
-                    "release" => Self::search_releases(&query, limit),
-                    "release_group" => Self::search_release_groups(&query, limit),
-                    "release_recordings" => Self::search_release_recordings(&query, limit),
-                    "release_group_releases" => Self::search_release_group_releases(&query, limit),
-                    _ => error_result(&format!(
-                        "Unknown search type: {}. Use 'release', 'release_group', 'release_recordings', or 'release_group_releases'",
-                        search_type
-                    )),
-                }
-            })
-            .join()
-            .unwrap_or_else(|e| error_result(&format!("Thread panicked: {:?}", e)));
-
-            result
-        })
-    }
-
-    /// Main handler for STDIO/TCP transport.
-    pub fn handle_stdio(params: MbReleaseParams) -> BoxFuture<'static, CallToolResult> {
-        Box::pin(async move {
-            let search_type = params.search_type.clone();
-            let query = params.query.clone();
-            let limit = validate_limit(params.limit);
-
-            let result = tokio::task::spawn_blocking(move || {
-                match search_type.as_str() {
-                    "release" => Self::search_releases(&query, limit),
-                    "release_group" => Self::search_release_groups(&query, limit),
-                    "release_recordings" => Self::search_release_recordings(&query, limit),
-                    "release_group_releases" => Self::search_release_group_releases(&query, limit),
-                    _ => error_result(&format!(
-                        "Unknown search type: {}. Use 'release', 'release_group', 'release_recordings', or 'release_group_releases'",
-                        search_type
-                    )),
-                }
-            })
-            .await
-            .unwrap_or_else(|e| error_result(&format!("Task failed: {:?}", e)));
-
-            result
         })
     }
 
@@ -410,7 +343,10 @@ impl MbReleaseTool {
                             .first_release_date
                             .as_ref()
                             .and_then(|d| extract_year(&d.0)),
-                        primary_type: release_group.primary_type.map(|t| format!("{:?}", t)),
+                        primary_type: release_group
+                            .primary_type
+                            .as_ref()
+                            .map(release_group_primary_type_str),
                     };
 
                     let structured_data = ReleaseGroupSearchResult {
@@ -453,7 +389,10 @@ impl MbReleaseTool {
                                 .first_release_date
                                 .as_ref()
                                 .and_then(|d| extract_year(&d.0)),
-                            primary_type: rg.primary_type.map(|t| format!("{:?}", t)),
+                            primary_type: rg
+                                .primary_type
+                                .as_ref()
+                                .map(release_group_primary_type_str),
                         })
                         .collect();
 
@@ -504,43 +443,61 @@ impl MbReleaseTool {
         match Release::fetch().id(&release_id).with_recordings().execute() {
             Ok(release) => {
                 let artist = get_artist_name(&release.artist_credit);
-                let mut total_tracks = 0;
-                let mut media_list = Vec::new();
+                let mut total_tracks = 0usize;
+                let mut media_list: Vec<Medium> = Vec::new();
+                // `limit` caps the total number of tracks across the whole
+                // release. Iterating discs sequentially with a shared budget
+                // keeps disc/track ordering stable while applying the limit
+                // globally rather than per-disc.
+                let mut remaining = limit;
 
                 if let Some(media) = &release.media {
                     for (disc_idx, medium) in media.iter().enumerate() {
+                        if remaining == 0 {
+                            break;
+                        }
                         let mut tracks = Vec::new();
-
                         if let Some(medium_tracks) = &medium.tracks {
-                            for track in medium_tracks.iter().take(limit) {
-                                if let Some(ref recording) = track.recording {
-                                    total_tracks += 1;
-                                    let track_artist = get_artist_name(&recording.artist_credit);
-
-                                    tracks.push(TrackInfo {
-                                        position: total_tracks,
-                                        title: recording.title.clone(),
-                                        duration: recording
-                                            .length
-                                            .map(|l| format_duration(l as u64)),
-                                        recording_mbid: recording.id.clone(),
-                                        artist: if track_artist != artist
-                                            && track_artist != "Unknown Artist"
-                                        {
-                                            Some(track_artist)
-                                        } else {
-                                            None
-                                        },
-                                    });
+                            for track in medium_tracks {
+                                if remaining == 0 {
+                                    break;
                                 }
+                                let Some(recording) = &track.recording else {
+                                    continue;
+                                };
+                                total_tracks += 1;
+                                remaining -= 1;
+                                let track_artist = get_artist_name(&recording.artist_credit);
+                                tracks.push(TrackInfo {
+                                    // Use the MusicBrainz-assigned position on
+                                    // the medium so skipping a recording-less
+                                    // track doesn't drift subsequent numbers.
+                                    position: track.position as usize,
+                                    title: recording.title.clone(),
+                                    duration: recording
+                                        .length
+                                        .map(|l| format_duration(l as u64)),
+                                    recording_mbid: recording.id.clone(),
+                                    artist: if track_artist != artist
+                                        && track_artist != "Unknown Artist"
+                                    {
+                                        Some(track_artist)
+                                    } else {
+                                        None
+                                    },
+                                });
                             }
                         }
-
-                        media_list.push(Medium {
-                            disc_number: disc_idx + 1,
-                            disc_title: medium.title.clone(),
-                            tracks,
-                        });
+                        // Only emit the disc if it ended up with at least one
+                        // selected track — avoids dangling empty discs when
+                        // the limit is small.
+                        if !tracks.is_empty() {
+                            media_list.push(Medium {
+                                disc_number: disc_idx + 1,
+                                disc_title: medium.title.clone(),
+                                tracks,
+                            });
+                        }
                     }
                 }
 

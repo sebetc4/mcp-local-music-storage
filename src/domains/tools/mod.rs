@@ -24,11 +24,11 @@
 
 pub mod definitions;
 mod error;
-mod handlers;
+#[cfg(feature = "http")]
+pub mod http_response;
 mod registry;
 pub mod router;
 
 pub use error::ToolError;
-pub use handlers::*;
 pub use registry::ToolRegistry;
 pub use router::build_tool_router;

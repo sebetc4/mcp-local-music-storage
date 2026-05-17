@@ -156,7 +156,7 @@ impl ReadMetadataTool {
             let channel_desc = props.channels().map(|ch| match ch {
                 1 => "Mono".to_string(),
                 2 => "Stereo".to_string(),
-                _ => "Multi-channel".to_string(),
+                n => format!("{}-channel", n),
             });
 
             Some(AudioProperties {
@@ -241,20 +241,7 @@ impl ReadMetadataTool {
 
         let result = Self::execute(&params, &config);
 
-        let mut response = serde_json::json!({
-            "content": result.content,
-            "isError": result.is_error.unwrap_or(false)
-        });
-
-        // Include structured_content if present
-        if let Some(structured) = result.structured_content {
-            response.as_object_mut().unwrap().insert(
-                "structuredContent".to_string(),
-                structured,
-            );
-        }
-
-        Ok(response)
+        crate::domains::tools::http_response::tool_result_to_json(result)
     }
 
     /// Create a Tool model for this tool (metadata).

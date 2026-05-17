@@ -19,14 +19,6 @@ pub enum Error {
     #[error("Tool error: {0}")]
     Tool(#[from] crate::domains::tools::ToolError),
 
-    /// Error originating from the resources domain.
-    #[error("Resource error: {0}")]
-    Resource(#[from] crate::domains::resources::ResourceError),
-
-    /// Error originating from the prompts domain.
-    #[error("Prompt error: {0}")]
-    Prompt(#[from] crate::domains::prompts::PromptError),
-
     /// Configuration-related errors.
     #[error("Configuration error: {0}")]
     Config(String),

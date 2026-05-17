@@ -161,12 +161,20 @@ impl FsDeleteTool {
                     },
                 };
 
-                // Return with text summary + structured content
-                CallToolResult {
-                    content: vec![Content::text(summary)],
-                    structured_content: Some(serde_json::to_value(&result).unwrap()),
-                    is_error: Some(false),
-                    meta: None,
+                // Return with text summary + structured content. If serializing the
+                // structured payload fails, fall back to a text-only success so the
+                // caller still sees the operation succeeded.
+                match serde_json::to_value(&result) {
+                    Ok(structured) => CallToolResult {
+                        content: vec![Content::text(summary)],
+                        structured_content: Some(structured),
+                        is_error: Some(false),
+                        meta: None,
+                    },
+                    Err(e) => {
+                        warn!("Failed to serialize structured content: {}", e);
+                        CallToolResult::success(vec![Content::text(summary)])
+                    }
                 }
             }
             Err(e) => {

@@ -4,7 +4,6 @@
 //! and find which releases contain a specific recording.
 
 use futures::FutureExt;
-use futures::future::BoxFuture;
 use musicbrainz_rs::{
     Fetch, Search,
     entity::recording::{Recording, RecordingSearchQuery},
@@ -188,20 +187,7 @@ impl MbRecordingTool {
             .join()
             .map_err(|_| "Thread panicked during recording search".to_string())?;
 
-        let mut response = serde_json::json!({
-            "content": result.content,
-            "isError": result.is_error.unwrap_or(false)
-        });
-
-        // Include structured_content if present
-        if let Some(structured) = result.structured_content {
-            response.as_object_mut().unwrap().insert(
-                "structuredContent".to_string(),
-                structured,
-            );
-        }
-
-        Ok(response)
+        crate::domains::tools::http_response::tool_result_to_json(result)
     }
 
     /// Create a Tool model for this tool (metadata).
@@ -242,51 +228,6 @@ impl MbRecordingTool {
                 Ok(result)
             }
             .boxed()
-        })
-    }
-
-    /// Main handler for HTTP transport.
-    #[deprecated(note = "Use http_handler() instead")]
-    pub fn handle_http(params: MbRecordingParams) -> BoxFuture<'static, CallToolResult> {
-        Box::pin(async move {
-            let search_type = params.search_type.clone();
-            let query = params.query.clone();
-            let limit = validate_limit(params.limit);
-
-            let result = std::thread::spawn(move || match search_type.as_str() {
-                "recording" => Self::search_recordings(&query, limit),
-                "recording_releases" => Self::search_recording_releases(&query, limit),
-                _ => error_result(&format!(
-                    "Unknown search type: {}. Use 'recording' or 'recording_releases'",
-                    search_type
-                )),
-            })
-            .join()
-            .unwrap_or_else(|e| error_result(&format!("Thread panicked: {:?}", e)));
-
-            result
-        })
-    }
-
-    /// Main handler for STDIO/TCP transport.
-    pub fn handle_stdio(params: MbRecordingParams) -> BoxFuture<'static, CallToolResult> {
-        Box::pin(async move {
-            let search_type = params.search_type.clone();
-            let query = params.query.clone();
-            let limit = validate_limit(params.limit);
-
-            let result = tokio::task::spawn_blocking(move || match search_type.as_str() {
-                "recording" => Self::search_recordings(&query, limit),
-                "recording_releases" => Self::search_recording_releases(&query, limit),
-                _ => error_result(&format!(
-                    "Unknown search type: {}. Use 'recording' or 'recording_releases'",
-                    search_type
-                )),
-            })
-            .await
-            .unwrap_or_else(|e| error_result(&format!("Task failed: {:?}", e)));
-
-            result
         })
     }
 

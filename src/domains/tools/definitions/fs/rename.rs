@@ -174,12 +174,19 @@ impl FsRenameTool {
                     },
                 };
 
-                // Return with text summary + structured content
-                CallToolResult {
-                    content: vec![Content::text(summary)],
-                    structured_content: Some(serde_json::to_value(&result).unwrap()),
-                    is_error: Some(false),
-                    meta: None,
+                // Return with text summary + structured content. Degrade to a
+                // text-only success if serialization fails.
+                match serde_json::to_value(&result) {
+                    Ok(structured) => CallToolResult {
+                        content: vec![Content::text(summary)],
+                        structured_content: Some(structured),
+                        is_error: Some(false),
+                        meta: None,
+                    },
+                    Err(e) => {
+                        warn!("Failed to serialize structured content: {}", e);
+                        CallToolResult::success(vec![Content::text(summary)])
+                    }
                 }
             }
             Err(e) => {

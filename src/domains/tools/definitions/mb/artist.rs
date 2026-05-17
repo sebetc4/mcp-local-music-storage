@@ -4,7 +4,6 @@
 //! using the MusicBrainz database.
 
 use futures::FutureExt;
-use futures::future::BoxFuture;
 use musicbrainz_rs::{
     Fetch, Search,
     entity::artist::{Artist, ArtistSearchQuery},
@@ -155,20 +154,7 @@ impl MbArtistTool {
             .join()
             .map_err(|_| "Thread panicked during artist search".to_string())?;
 
-        let mut response = serde_json::json!({
-            "content": result.content,
-            "isError": result.is_error.unwrap_or(false)
-        });
-
-        // Include structured_content if present
-        if let Some(structured) = result.structured_content {
-            response.as_object_mut().unwrap().insert(
-                "structuredContent".to_string(),
-                structured,
-            );
-        }
-
-        Ok(response)
+        crate::domains::tools::http_response::tool_result_to_json(result)
     }
 
     /// Create a Tool model for this tool (metadata).
@@ -209,52 +195,6 @@ impl MbArtistTool {
                 Ok(result)
             }
             .boxed()
-        })
-    }
-
-    /// Main handler for HTTP transport (runs in its own thread to avoid runtime conflicts).
-    #[deprecated(note = "Use http_handler() instead")]
-    pub fn handle_http(params: MbArtistParams) -> BoxFuture<'static, CallToolResult> {
-        Box::pin(async move {
-            let search_type = params.search_type.clone();
-            let query = params.query.clone();
-            let limit = validate_limit(params.limit);
-
-            // Run in a separate thread to avoid "Cannot start a runtime from within a runtime" error
-            let result = std::thread::spawn(move || match search_type.as_str() {
-                "artist" => Self::search_artists(&query, limit),
-                "artist_releases" => Self::search_releases_by_artist(&query, limit),
-                _ => error_result(&format!(
-                    "Unknown search type: {}. Use 'artist' or 'artist_releases'",
-                    search_type
-                )),
-            })
-            .join()
-            .unwrap_or_else(|e| error_result(&format!("Thread panicked: {:?}", e)));
-
-            result
-        })
-    }
-
-    /// Main handler for STDIO/TCP transport (uses spawn_blocking).
-    pub fn handle_stdio(params: MbArtistParams) -> BoxFuture<'static, CallToolResult> {
-        Box::pin(async move {
-            let search_type = params.search_type.clone();
-            let query = params.query.clone();
-            let limit = validate_limit(params.limit);
-
-            let result = tokio::task::spawn_blocking(move || match search_type.as_str() {
-                "artist" => Self::search_artists(&query, limit),
-                "artist_releases" => Self::search_releases_by_artist(&query, limit),
-                _ => error_result(&format!(
-                    "Unknown search type: {}. Use 'artist' or 'artist_releases'",
-                    search_type
-                )),
-            })
-            .await
-            .unwrap_or_else(|e| error_result(&format!("Task failed: {:?}", e)));
-
-            result
         })
     }
 
@@ -341,33 +281,35 @@ impl MbArtistTool {
     pub fn search_releases_by_artist(query: &str, limit: usize) -> CallToolResult {
         info!("Searching for releases by artist: {}", query);
 
-        // First, find the artist
-        let artist_id = if is_mbid(query) {
-            query.to_string()
+        // Resolve the artist in a single round-trip:
+        //  - MBID supplied → one `fetch` call to retrieve the display name.
+        //  - Name supplied → one `search` call; the first hit already carries
+        //    both id and name, so no second fetch is needed.
+        let (artist_id, artist_name) = if is_mbid(query) {
+            let id = query.to_string();
+            let name = match Artist::fetch().id(&id).execute() {
+                Ok(artist) => artist.name,
+                Err(_) => "Unknown Artist".to_string(),
+            };
+            (id, name)
         } else {
-            // Search for artist first
             debug!("Looking up artist by name: {}", query);
             let search_query = ArtistSearchQuery::query_builder().artist(query).build();
             match Artist::search(search_query).execute() {
-                Ok(result) => {
-                    if let Some(artist) = result.entities.first() {
+                Ok(result) => match result.entities.into_iter().next() {
+                    Some(artist) => {
                         debug!("Found artist: {} ({})", artist.name, artist.id);
-                        artist.id.clone()
-                    } else {
+                        (artist.id, artist.name)
+                    }
+                    None => {
                         return error_result(&format!("No artist found matching: {}", query));
                     }
-                }
+                },
                 Err(e) => {
                     error!("Artist lookup failed: {:?}", e);
                     return error_result(&format!("Artist lookup failed: {}", e));
                 }
             }
-        };
-
-        // Get artist details first (for display name)
-        let artist_name = match Artist::fetch().id(&artist_id).execute() {
-            Ok(artist) => artist.name.clone(),
-            Err(_) => "Unknown Artist".to_string(),
         };
 
         // Search for releases by this artist using arid (artist MBID)

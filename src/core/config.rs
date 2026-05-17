@@ -17,12 +17,6 @@ pub struct Config {
     /// Server identification and metadata.
     pub server: ServerConfig,
 
-    /// Resources domain configuration.
-    pub resources: ResourcesConfig,
-
-    /// Prompts domain configuration.
-    pub prompts: PromptsConfig,
-
     /// Logging configuration.
     pub logging: LoggingConfig,
 
@@ -44,21 +38,6 @@ pub struct ServerConfig {
 
     /// The version of the server.
     pub version: String,
-}
-
-/// Configuration for the resources domain.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ResourcesConfig {
-    /// Base directory for file resources (if applicable).
-    pub base_path: Option<String>,
-    // Resources are registered in domains/resources/registry.rs
-}
-
-/// Configuration for the prompts domain.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct PromptsConfig {
-    // Prompts are registered in domains/prompts/registry.rs
-    // Add prompt-specific configuration here if needed.
 }
 
 /// Logging configuration.
@@ -105,11 +84,30 @@ pub struct SecurityConfig {
     pub allow_symlinks: bool,
 }
 
+/// Parse an env-style boolean. Accepts `true`/`false`, `1`/`0`, `yes`/`no`
+/// (case-insensitive, surrounding whitespace ignored). Any other value emits
+/// a `warn!` and falls back to `default` — silently accepting typos like
+/// `MCP_ALLOW_SYMLINKS=flase` would otherwise mask misconfiguration.
+pub fn parse_bool_env(name: &str, raw: &str, default: bool) -> bool {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" => true,
+        "false" | "0" | "no" => false,
+        other => {
+            warn!(
+                "Invalid boolean value {:?} for {}; using default {}",
+                other, name, default
+            );
+            default
+        }
+    }
+}
+
 impl Default for CredentialsConfig {
     fn default() -> Self {
         Self {
-            // Default public key for testing/demo purposes
-            acoustid_api_key: Some("Kok2GHQlrAg".to_string()),
+            // No embedded fallback — see CLAUDE.md §2.2 and Phase 1.3 of the
+            // cleanup roadmap. Callers must provide a key via MCP_ACOUSTID_API_KEY.
+            acoustid_api_key: None,
         }
     }
 }
@@ -132,8 +130,6 @@ impl Default for Config {
                 name: "mcp-server".to_string(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
             },
-            resources: ResourcesConfig::default(),
-            prompts: PromptsConfig::default(),
             logging: LoggingConfig {
                 level: "info".to_string(),
                 with_timestamps: true,
@@ -153,41 +149,46 @@ impl Config {
 
     /// Load configuration from environment variables.
     ///
-    /// Environment variables are expected to be prefixed with `MCP_`.
-    /// For example: `MCP_SERVER_NAME`, `MCP_LOGGING_LEVEL`.
+    /// Loads `.env` (if present) into the process environment, then reads
+    /// `MCP_*` variables. For deterministic tests use [`Config::from_env_with`]
+    /// with a closure so the developer's `.env` cannot pollute the result.
     pub fn from_env() -> Self {
         dotenvy::dotenv().ok();
+        Self::from_env_with(|name| std::env::var(name).ok())
+    }
 
+    /// Build a [`Config`] from a caller-supplied env reader.
+    ///
+    /// The reader is the only source of `MCP_*` values — neither `.env` nor the
+    /// process environment is touched directly here, which makes this the safe
+    /// entry point for tests.
+    pub fn from_env_with<F>(read: F) -> Self
+    where
+        F: Fn(&str) -> Option<String>,
+    {
         let mut config = Self::default();
 
-        if let Ok(name) = std::env::var("MCP_SERVER_NAME") {
+        if let Some(name) = read("MCP_SERVER_NAME") {
             config.server.name = name;
         }
 
-        if let Ok(level) = std::env::var("MCP_LOG_LEVEL") {
+        if let Some(level) = read("MCP_LOG_LEVEL") {
             config.logging.level = level;
         }
 
-        if let Ok(base_path) = std::env::var("MCP_RESOURCES_BASE_PATH") {
-            config.resources.base_path = Some(base_path);
-        }
+        config.transport = TransportConfig::from_env_with(&read);
 
-        // Load transport configuration from environment
-        config.transport = TransportConfig::from_env();
-
-        // Load AcoustID API key
-        if let Ok(api_key) = std::env::var("MCP_ACOUSTID_API_KEY") {
+        if let Some(api_key) = read("MCP_ACOUSTID_API_KEY") {
             config.credentials.acoustid_api_key = Some(api_key);
             info!("AcoustID API key loaded from environment");
         } else {
             warn!(
-                "Using default AcoustID API key. For higher rate limits, \
-                 set MCP_ACOUSTID_API_KEY (get your key at https://acoustid.org/api-key)"
+                "MCP_ACOUSTID_API_KEY not set — mb_identify_record will refuse \
+                 to run. Get a free key at https://acoustid.org/api-key"
             );
         }
 
-        // Load security configuration
-        if let Ok(root_path) = std::env::var("MCP_ROOT_PATH") {
+        if let Some(root_path) = read("MCP_ROOT_PATH") {
             config.security.root_path = Some(PathBuf::from(root_path));
             info!("Path security enabled: root directory set to {:?}", config.security.root_path);
         } else {
@@ -197,8 +198,8 @@ impl Config {
             );
         }
 
-        if let Ok(allow_symlinks) = std::env::var("MCP_ALLOW_SYMLINKS") {
-            config.security.allow_symlinks = allow_symlinks.parse().unwrap_or(true);
+        if let Some(raw) = read("MCP_ALLOW_SYMLINKS") {
+            config.security.allow_symlinks = parse_bool_env("MCP_ALLOW_SYMLINKS", &raw, true);
             info!("Symlinks allowed: {}", config.security.allow_symlinks);
         }
 
@@ -209,37 +210,25 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    // Mutex to ensure env var tests run serially
-    static ENV_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_credentials_from_env() {
-        let _lock = ENV_TEST_LOCK.lock().unwrap();
-        unsafe {
-            std::env::set_var("MCP_ACOUSTID_API_KEY", "test_key_12345");
-        }
-        let config = Config::from_env();
+        let config = Config::from_env_with(|name| match name {
+            "MCP_ACOUSTID_API_KEY" => Some("test_key_12345".to_string()),
+            _ => None,
+        });
         assert_eq!(
             config.credentials.acoustid_api_key.as_deref(),
             Some("test_key_12345")
         );
-        unsafe {
-            std::env::remove_var("MCP_ACOUSTID_API_KEY");
-        }
     }
 
     #[test]
-    fn test_credentials_default_fallback() {
-        let _lock = ENV_TEST_LOCK.lock().unwrap();
-        unsafe {
-            std::env::remove_var("MCP_ACOUSTID_API_KEY");
-        }
-        let config = Config::from_env();
-        assert_eq!(
-            config.credentials.acoustid_api_key.as_deref(),
-            Some("Kok2GHQlrAg")
+    fn test_credentials_default_is_none() {
+        let config = Config::from_env_with(|_| None);
+        assert!(
+            config.credentials.acoustid_api_key.is_none(),
+            "no embedded default key must ship: callers set MCP_ACOUSTID_API_KEY"
         );
     }
 
@@ -254,8 +243,46 @@ mod tests {
     }
 
     #[test]
-    fn test_config_default_has_credentials() {
+    fn test_config_default_has_no_acoustid_key() {
         let config = Config::default();
-        assert!(config.credentials.acoustid_api_key.is_some());
+        assert!(config.credentials.acoustid_api_key.is_none());
+    }
+
+    #[test]
+    fn parse_bool_env_accepts_canonical_values() {
+        for v in ["true", "TRUE", "True", "1", "yes", "YES", " yes "] {
+            assert!(parse_bool_env("X", v, false), "expected true for {:?}", v);
+        }
+        for v in ["false", "FALSE", "0", "no", "NO"] {
+            assert!(!parse_bool_env("X", v, true), "expected false for {:?}", v);
+        }
+    }
+
+    #[test]
+    fn parse_bool_env_falls_back_on_typo() {
+        // A typo like "flase" must NOT silently flip to true — must use default.
+        assert!(parse_bool_env("MCP_ALLOW_SYMLINKS", "flase", true));
+        assert!(!parse_bool_env("MCP_ALLOW_SYMLINKS", "flase", false));
+        assert!(parse_bool_env("X", "", true));
+        assert!(parse_bool_env("X", "maybe", true));
+    }
+
+    #[test]
+    fn allow_symlinks_typo_uses_default() {
+        // Regression: prior behavior was `parse().unwrap_or(true)` which kept
+        // `true` on any non-"true"/"false" input. The new helper must apply
+        // the default (true) when the value is invalid, not silently flip.
+        let config = Config::from_env_with(|name| match name {
+            "MCP_ALLOW_SYMLINKS" => Some("flase".to_string()),
+            _ => None,
+        });
+        assert!(config.security.allow_symlinks);
+
+        // And when the user explicitly says "false", it must take effect.
+        let config = Config::from_env_with(|name| match name {
+            "MCP_ALLOW_SYMLINKS" => Some("false".to_string()),
+            _ => None,
+        });
+        assert!(!config.security.allow_symlinks);
     }
 }

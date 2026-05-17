@@ -17,6 +17,7 @@ use std::sync::Arc;
 use tracing::{info, instrument, warn};
 
 use crate::core::config::Config;
+use crate::core::fs_atomic::temp_sibling;
 use crate::core::security::validate_path;
 
 // ============================================================================
@@ -137,30 +138,24 @@ impl WriteMetadataTool {
             }
         };
 
-        // Get or create primary tag
-        let tag = if params.clear_existing {
-            // Clear existing and create new tag
+        // Ensure a primary tag exists, creating one of the right type if needed.
+        // Done as straight-line statements rather than an expression so we can
+        // bail out cleanly if `primary_tag_mut` somehow returns None after the
+        // insert (defensive — should not happen with lofty's current API).
+        if params.clear_existing {
             tagged_file.clear();
-            match tagged_file.primary_tag_mut() {
-                Some(t) => t,
-                None => {
-                    // If no tag exists, we need to create one
-                    let tag_type = tagged_file.primary_tag_type();
-                    let new_tag = lofty::tag::Tag::new(tag_type);
-                    tagged_file.insert_tag(new_tag);
-                    tagged_file.primary_tag_mut().expect("Just inserted tag")
-                }
-            }
-        } else {
-            match tagged_file.primary_tag_mut() {
-                Some(t) => t,
-                None => {
-                    // Create new tag if none exists
-                    let tag_type = tagged_file.primary_tag_type();
-                    let new_tag = lofty::tag::Tag::new(tag_type);
-                    tagged_file.insert_tag(new_tag);
-                    tagged_file.primary_tag_mut().expect("Just inserted tag")
-                }
+        }
+        if tagged_file.primary_tag().is_none() {
+            let tag_type = tagged_file.primary_tag_type();
+            tagged_file.insert_tag(lofty::tag::Tag::new(tag_type));
+        }
+        let tag = match tagged_file.primary_tag_mut() {
+            Some(t) => t,
+            None => {
+                warn!("Failed to obtain primary tag after insert");
+                return CallToolResult::error(vec![Content::text(
+                    "Internal error: failed to create primary tag".to_string(),
+                )]);
             }
         };
 
@@ -220,13 +215,44 @@ impl WriteMetadataTool {
             updated_fields.insert("comment".to_string(), comment.clone());
         }
 
-        // Save changes to file
+        // Save changes atomically: lofty rewrites the file in place, so we copy
+        // the original to a sibling temp, mutate the copy, then rename it on
+        // top of the original. A crash mid-save leaves the source untouched.
         let write_options = lofty::config::WriteOptions::default();
 
-        if let Err(e) = tagged_file.save_to_path(&path, write_options) {
+        let tmp = match temp_sibling(&path) {
+            Ok(p) => p,
+            Err(e) => {
+                warn!("Failed to compute temp path: {}", e);
+                return CallToolResult::error(vec![Content::text(format!(
+                    "Failed to compute temp path: {}",
+                    e
+                ))]);
+            }
+        };
+
+        if let Err(e) = std::fs::copy(&path, &tmp) {
+            warn!("Failed to copy source for atomic save: {}", e);
+            return CallToolResult::error(vec![Content::text(format!(
+                "Failed to copy source for atomic save: {}",
+                e
+            ))]);
+        }
+
+        if let Err(e) = tagged_file.save_to_path(&tmp, write_options) {
             warn!("Failed to save metadata: {}", e);
+            let _ = std::fs::remove_file(&tmp);
             return CallToolResult::error(vec![Content::text(format!(
                 "Failed to save metadata: {}",
+                e
+            ))]);
+        }
+
+        if let Err(e) = std::fs::rename(&tmp, &path) {
+            warn!("Failed to rename temp into place: {}", e);
+            let _ = std::fs::remove_file(&tmp);
+            return CallToolResult::error(vec![Content::text(format!(
+                "Failed to finalize atomic save: {}",
                 e
             ))]);
         }
@@ -303,20 +329,7 @@ impl WriteMetadataTool {
 
         let result = Self::execute(&params, &config);
 
-        let mut response = serde_json::json!({
-            "content": result.content,
-            "isError": result.is_error.unwrap_or(false)
-        });
-
-        // Include structured_content if present
-        if let Some(structured) = result.structured_content {
-            response.as_object_mut().unwrap().insert(
-                "structuredContent".to_string(),
-                structured,
-            );
-        }
-
-        Ok(response)
+        crate::domains::tools::http_response::tool_result_to_json(result)
     }
 
     /// Create a Tool model for this tool (metadata).

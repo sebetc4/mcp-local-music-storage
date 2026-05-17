@@ -6,11 +6,12 @@
 use axum::{
     Json, Router,
     extract::State,
-    http::StatusCode,
+    http::{HeaderValue, StatusCode},
     response::IntoResponse,
     routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
+use std::net::IpAddr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tower_http::cors::{Any, CorsLayer};
@@ -18,6 +19,53 @@ use tracing::{info, instrument, warn};
 
 use super::{TransportConfig, TransportError, TransportResult, config::HttpConfig};
 use crate::core::McpServer;
+
+/// Resolved CORS policy for a given [`HttpConfig`]. Computed up-front so the
+/// "no Any on a public bind" rule can be exercised in unit tests without
+/// spinning up a server.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CorsDecision {
+    /// CORS layer is omitted entirely (`enable_cors = false`).
+    Disabled,
+    /// No explicit allow-list, but host is loopback — `Any` is permitted with
+    /// a startup warning.
+    AllowAnyLoopback,
+    /// Explicit allow-list of origins.
+    Allowlist(Vec<String>),
+    /// Startup must be refused — non-loopback bind without explicit origins.
+    Reject(String),
+}
+
+/// True if `host` denotes a loopback target: any IP that parses as a loopback
+/// address, or the literal hostname `localhost`.
+pub(crate) fn is_loopback_host(host: &str) -> bool {
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    host.parse::<IpAddr>()
+        .map(|ip| ip.is_loopback())
+        .unwrap_or(false)
+}
+
+/// Decide what CORS behavior to apply based on the config + bind host.
+pub(crate) fn decide_cors_policy(config: &HttpConfig) -> CorsDecision {
+    if !config.enable_cors {
+        return CorsDecision::Disabled;
+    }
+    if !config.cors_allow_origins.is_empty() {
+        return CorsDecision::Allowlist(config.cors_allow_origins.clone());
+    }
+    if is_loopback_host(&config.host) {
+        return CorsDecision::AllowAnyLoopback;
+    }
+    CorsDecision::Reject(format!(
+        "CORS is enabled with a wildcard origin on a non-loopback bind ({}). \
+         Set MCP_HTTP_CORS_ORIGINS to an explicit comma-separated list of \
+         allowed origins, or set MCP_HTTP_CORS=false to disable CORS, or bind \
+         to a loopback host.",
+        config.host
+    ))
+}
 
 /// HTTP transport handler.
 pub struct HttpTransport {
@@ -154,24 +202,57 @@ impl HttpTransport {
             .route("/", get(root_handler))
             .with_state(state);
 
-        // Add CORS if enabled
-        if self.config.enable_cors {
-            let cors = CorsLayer::new()
-                .allow_origin(Any)
-                .allow_methods(Any)
-                .allow_headers(Any);
-            app = app.layer(cors);
+        // Resolve and apply CORS policy before binding. Misconfigurations refuse
+        // startup so an operator notices immediately instead of silently
+        // exposing `Any` on a public interface.
+        let cors_status: &'static str;
+        match decide_cors_policy(&self.config) {
+            CorsDecision::Disabled => {
+                cors_status = "disabled";
+            }
+            CorsDecision::AllowAnyLoopback => {
+                warn!(
+                    "CORS Any/Any/Any in effect on loopback host {} — fine for \
+                     local dev. Set MCP_HTTP_CORS_ORIGINS before exposing this \
+                     binary on a non-loopback interface.",
+                    self.config.host
+                );
+                let cors = CorsLayer::new()
+                    .allow_origin(Any)
+                    .allow_methods(Any)
+                    .allow_headers(Any);
+                app = app.layer(cors);
+                cors_status = "any (loopback only)";
+            }
+            CorsDecision::Allowlist(origins) => {
+                let parsed: Vec<HeaderValue> = origins
+                    .iter()
+                    .map(|o| {
+                        HeaderValue::from_str(o).map_err(|e| {
+                            TransportError::init(format!(
+                                "Invalid CORS origin {:?}: {}",
+                                o, e
+                            ))
+                        })
+                    })
+                    .collect::<Result<_, _>>()?;
+                let cors = CorsLayer::new()
+                    .allow_origin(parsed)
+                    .allow_methods(Any)
+                    .allow_headers(Any);
+                app = app.layer(cors);
+                info!("CORS allow-list: {}", origins.join(", "));
+                cors_status = "allowlist";
+            }
+            CorsDecision::Reject(msg) => {
+                return Err(TransportError::init(msg));
+            }
         }
 
         let listener = tokio::net::TcpListener::bind(&addr)
             .await
             .map_err(|e| TransportError::bind(&addr, e))?;
 
-        let cors_status = if self.config.enable_cors {
-            "enabled"
-        } else {
-            "disabled"
-        };
         info!(
             "Ready - listening on {} (JSON-RPC over HTTP, CORS {})",
             addr, cors_status
@@ -241,21 +322,6 @@ async fn process_request(state: &AppState, request: JsonRpcRequest) -> JsonRpcRe
         // Call a tool
         "tools/call" => handle_tools_call(state, request).await,
 
-        // List available resources
-        "resources/list" => handle_resources_list(state, request).await,
-
-        // List resource templates
-        "resources/templates/list" => handle_resources_templates_list(state, request).await,
-
-        // Read a resource
-        "resources/read" => handle_resources_read(state, request).await,
-
-        // List available prompts
-        "prompts/list" => handle_prompts_list(state, request).await,
-
-        // Get a prompt
-        "prompts/get" => handle_prompts_get(state, request).await,
-
         // Notifications (no response needed for stateless HTTP)
         method if method.starts_with("notifications/") => {
             handle_notification(state, &request).await;
@@ -289,15 +355,13 @@ async fn handle_initialize(state: &AppState, request: JsonRpcRequest) -> JsonRpc
     let result = serde_json::json!({
         "protocolVersion": "2024-11-05",
         "capabilities": {
-            "tools": {},
-            "resources": {},
-            "prompts": {}
+            "tools": {}
         },
         "serverInfo": {
             "name": state.server.name(),
             "version": state.server.version()
         },
-        "instructions": "This is a template MCP server. It provides example tools, resources, and prompts."
+        "instructions": "MCP server for music library automation: filesystem, audio metadata, and MusicBrainz tooling."
     });
 
     JsonRpcResponse::success(request.id, result)
@@ -340,87 +404,6 @@ async fn handle_tools_call(state: &AppState, request: JsonRpcRequest) -> JsonRpc
     }
 }
 
-/// Handle resources/list request.
-async fn handle_resources_list(state: &AppState, request: JsonRpcRequest) -> JsonRpcResponse {
-    info!("Processing resources/list request");
-
-    let resources = state.server.list_resources().await;
-    let result = serde_json::json!({
-        "resources": resources
-    });
-
-    JsonRpcResponse::success(request.id, result)
-}
-
-/// Handle resources/templates/list request.
-async fn handle_resources_templates_list(
-    state: &AppState,
-    request: JsonRpcRequest,
-) -> JsonRpcResponse {
-    info!("Processing resources/templates/list request");
-
-    let templates = state.server.list_resource_templates().await;
-    let result = serde_json::json!({
-        "resourceTemplates": templates
-    });
-
-    JsonRpcResponse::success(request.id, result)
-}
-
-/// Handle resources/read request.
-async fn handle_resources_read(state: &AppState, request: JsonRpcRequest) -> JsonRpcResponse {
-    info!("Processing resources/read request");
-
-    let params = match request.params {
-        Some(p) => p,
-        None => return JsonRpcResponse::invalid_params(request.id.clone(), "Missing params"),
-    };
-
-    let uri = match params.get("uri").and_then(|v| v.as_str()) {
-        Some(u) => u.to_string(),
-        None => return JsonRpcResponse::invalid_params(request.id.clone(), "Missing resource URI"),
-    };
-
-    match state.server.read_resource(&uri).await {
-        Ok(result) => JsonRpcResponse::success(request.id, result),
-        Err(e) => JsonRpcResponse::invalid_params(request.id, e.to_string()),
-    }
-}
-
-/// Handle prompts/list request.
-async fn handle_prompts_list(state: &AppState, request: JsonRpcRequest) -> JsonRpcResponse {
-    info!("Processing prompts/list request");
-
-    let prompts = state.server.list_prompts().await;
-    let result = serde_json::json!({
-        "prompts": prompts
-    });
-
-    JsonRpcResponse::success(request.id, result)
-}
-
-/// Handle prompts/get request.
-async fn handle_prompts_get(state: &AppState, request: JsonRpcRequest) -> JsonRpcResponse {
-    info!("Processing prompts/get request");
-
-    let params = match request.params {
-        Some(p) => p,
-        None => return JsonRpcResponse::invalid_params(request.id.clone(), "Missing params"),
-    };
-
-    let name = match params.get("name").and_then(|v| v.as_str()) {
-        Some(n) => n.to_string(),
-        None => return JsonRpcResponse::invalid_params(request.id.clone(), "Missing prompt name"),
-    };
-
-    let arguments = params.get("arguments").cloned();
-
-    match state.server.get_prompt(&name, arguments).await {
-        Ok(result) => JsonRpcResponse::success(request.id, result),
-        Err(e) => JsonRpcResponse::invalid_params(request.id, e.to_string()),
-    }
-}
-
 /// Handle notifications (no response needed).
 async fn handle_notification(state: &AppState, request: &JsonRpcRequest) {
     match request.method.as_str() {
@@ -434,5 +417,77 @@ async fn handle_notification(state: &AppState, request: &JsonRpcRequest) {
         _ => {
             info!("Received notification: {}", request.method);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config(host: &str, enable_cors: bool, origins: &[&str]) -> HttpConfig {
+        HttpConfig {
+            port: 8080,
+            host: host.to_string(),
+            rpc_path: "/mcp".to_string(),
+            enable_cors,
+            cors_allow_origins: origins.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn loopback_recognized() {
+        assert!(is_loopback_host("127.0.0.1"));
+        assert!(is_loopback_host("::1"));
+        assert!(is_loopback_host("localhost"));
+        assert!(is_loopback_host("LocalHost"));
+        // Any IP in 127.0.0.0/8 is loopback.
+        assert!(is_loopback_host("127.5.6.7"));
+    }
+
+    #[test]
+    fn non_loopback_rejected() {
+        assert!(!is_loopback_host("0.0.0.0"));
+        assert!(!is_loopback_host("192.168.1.10"));
+        assert!(!is_loopback_host("10.0.0.1"));
+        assert!(!is_loopback_host("example.com"));
+    }
+
+    #[test]
+    fn cors_disabled_when_flag_off() {
+        let c = config("0.0.0.0", false, &[]);
+        assert_eq!(decide_cors_policy(&c), CorsDecision::Disabled);
+    }
+
+    #[test]
+    fn cors_allowlist_used_when_provided() {
+        let c = config("0.0.0.0", true, &["https://app.example.com"]);
+        assert_eq!(
+            decide_cors_policy(&c),
+            CorsDecision::Allowlist(vec!["https://app.example.com".to_string()])
+        );
+    }
+
+    #[test]
+    fn cors_any_allowed_on_loopback() {
+        let c = config("127.0.0.1", true, &[]);
+        assert_eq!(decide_cors_policy(&c), CorsDecision::AllowAnyLoopback);
+    }
+
+    #[test]
+    fn cors_rejected_on_public_bind_without_allowlist() {
+        let c = config("0.0.0.0", true, &[]);
+        match decide_cors_policy(&c) {
+            CorsDecision::Reject(msg) => {
+                assert!(msg.contains("MCP_HTTP_CORS_ORIGINS"));
+                assert!(msg.contains("0.0.0.0"));
+            }
+            other => panic!("expected Reject, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn cors_allowlist_wins_over_loopback() {
+        let c = config("127.0.0.1", true, &["https://app.example.com"]);
+        assert!(matches!(decide_cors_policy(&c), CorsDecision::Allowlist(_)));
     }
 }

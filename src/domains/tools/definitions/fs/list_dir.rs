@@ -199,12 +199,19 @@ impl FsListDirTool {
             )
         };
 
-        // Return with text summary + structured content (avoids duplicating the full hierarchy in text)
-        CallToolResult {
-            content: vec![Content::text(summary)],
-            structured_content: Some(serde_json::to_value(&result).unwrap()),
-            is_error: Some(false),
-            meta: None,
+        // Return with text summary + structured content (avoids duplicating the
+        // full hierarchy in text). On serialization failure, degrade to text only.
+        match serde_json::to_value(&result) {
+            Ok(structured) => CallToolResult {
+                content: vec![Content::text(summary)],
+                structured_content: Some(structured),
+                is_error: Some(false),
+                meta: None,
+            },
+            Err(e) => {
+                warn!("Failed to serialize structured content: {}", e);
+                CallToolResult::success(vec![Content::text(summary)])
+            }
         }
     }
 

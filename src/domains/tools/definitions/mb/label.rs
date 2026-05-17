@@ -4,7 +4,6 @@
 //! Labels represent the companies or organizations that publish music releases.
 
 use futures::FutureExt;
-use futures::future::BoxFuture;
 use musicbrainz_rs::{
     Search,
     entity::label::{Label, LabelSearchQuery},
@@ -19,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{error, info};
 
 use super::common::{
-    default_limit, error_result, structured_result, validate_limit,
+    default_limit, error_result, label_type_str, structured_result, validate_limit,
 };
 
 /// Parameters for label search operations.
@@ -103,20 +102,7 @@ impl MbLabelTool {
             .join()
             .map_err(|_| "Thread panicked during label search".to_string())?;
 
-        let mut response = serde_json::json!({
-            "content": result.content,
-            "isError": result.is_error.unwrap_or(false)
-        });
-
-        // Include structured_content if present
-        if let Some(structured) = result.structured_content {
-            response.as_object_mut().unwrap().insert(
-                "structuredContent".to_string(),
-                structured,
-            );
-        }
-
-        Ok(response)
+        crate::domains::tools::http_response::tool_result_to_json(result)
     }
 
     /// Create a Tool model for this tool (metadata).
@@ -160,35 +146,6 @@ impl MbLabelTool {
         })
     }
 
-    /// Main handler for HTTP transport.
-    #[deprecated(note = "Use http_handler() instead")]
-    pub fn handle_http(params: MbLabelParams) -> BoxFuture<'static, CallToolResult> {
-        Box::pin(async move {
-            let query = params.query.clone();
-            let limit = validate_limit(params.limit);
-
-            let result = std::thread::spawn(move || Self::search_labels(&query, limit))
-                .join()
-                .unwrap_or_else(|e| error_result(&format!("Thread panicked: {:?}", e)));
-
-            result
-        })
-    }
-
-    /// Main handler for STDIO/TCP transport.
-    pub fn handle_stdio(params: MbLabelParams) -> BoxFuture<'static, CallToolResult> {
-        Box::pin(async move {
-            let query = params.query.clone();
-            let limit = validate_limit(params.limit);
-
-            let result = tokio::task::spawn_blocking(move || Self::search_labels(&query, limit))
-                .await
-                .unwrap_or_else(|e| error_result(&format!("Task failed: {:?}", e)));
-
-            result
-        })
-    }
-
     /// Search for labels by name.
     pub fn search_labels(query: &str, limit: usize) -> CallToolResult {
         info!("Searching for labels matching: {}", query);
@@ -209,7 +166,7 @@ impl MbLabelTool {
                     .map(|l| LabelInfo {
                         name: l.name,
                         mbid: l.id,
-                        label_type: l.label_type.map(|t| format!("{:?}", t)),
+                        label_type: l.label_type.as_ref().map(label_type_str),
                         country: l.country,
                         disambiguation: l.disambiguation.filter(|d| !d.is_empty()),
                         label_code: l.label_code.map(|c| c as i32),

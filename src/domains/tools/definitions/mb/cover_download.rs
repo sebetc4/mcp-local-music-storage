@@ -11,13 +11,37 @@ use rmcp::{
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::io::Read;
 use std::sync::Arc;
 use tracing::{error, info, warn};
 
 use crate::core::config::Config;
-use crate::core::security::validate_path;
+use crate::core::fs_atomic::write_atomic;
+use crate::core::security::{is_safe_filename, validate_path};
 
 use super::common::{error_result, is_mbid, structured_result};
+
+/// Hard cap on cover-art download size. A misbehaving or malicious server could
+/// otherwise stream unbounded bytes into memory.
+const MAX_COVER_BYTES: u64 = 50 * 1024 * 1024;
+
+/// Read up to `cap` bytes from `reader`. Returns an error if more bytes are
+/// available — i.e. the source exceeded the cap.
+fn read_with_cap<R: Read>(reader: &mut R, cap: u64) -> Result<Vec<u8>, String> {
+    let mut buf = Vec::new();
+    // Take cap+1 so a single extra byte beyond the cap surfaces as overflow.
+    let mut limited = reader.take(cap.saturating_add(1));
+    limited
+        .read_to_end(&mut buf)
+        .map_err(|e| format!("Failed to read response: {}", e))?;
+    if buf.len() as u64 > cap {
+        return Err(format!(
+            "cover too large: > {} bytes, max {}",
+            cap, cap
+        ));
+    }
+    Ok(buf)
+}
 
 // ============================================================================
 // Cover Art Archive JSON structures
@@ -196,7 +220,16 @@ impl MbCoverDownloadTool {
             return error_result("Invalid MBID format (expected UUID)");
         }
 
-        // 2. Validate path with security
+        // 2. Reject unsafe filenames before any I/O. Without this check a value like
+        // `"../escape"` would let `dir_path.join(...)` write outside the validated root.
+        if !is_safe_filename(&params.filename) {
+            warn!("Rejected unsafe filename: {:?}", params.filename);
+            return error_result(
+                "Invalid filename: must not be empty, start with '.', or contain path separators",
+            );
+        }
+
+        // 3. Validate path with security
         let dir_path = match validate_path(&params.path, config) {
             Ok(p) => p,
             Err(e) => {
@@ -281,7 +314,7 @@ impl MbCoverDownloadTool {
         info!("Downloading from: {}", secure_url);
 
         let image_bytes = match client.get(&secure_url).send() {
-            Ok(response) => {
+            Ok(mut response) => {
                 let status = response.status();
                 if !status.is_success() {
                     error!("HTTP request failed with status: {} for URL: {}", status, secure_url);
@@ -290,7 +323,22 @@ impl MbCoverDownloadTool {
                         status, secure_url
                     ));
                 }
-                match response.bytes() {
+
+                // Reject upfront when the server declares an oversized body.
+                if let Some(declared) = response.content_length() {
+                    if declared > MAX_COVER_BYTES {
+                        error!(
+                            "Cover Content-Length {} exceeds cap {} for URL: {}",
+                            declared, MAX_COVER_BYTES, secure_url
+                        );
+                        return error_result(&format!(
+                            "cover too large: {} bytes, max {}",
+                            declared, MAX_COVER_BYTES
+                        ));
+                    }
+                }
+
+                match read_with_cap(&mut response, MAX_COVER_BYTES) {
                     Ok(bytes) => {
                         if bytes.is_empty() {
                             error!("Received empty response from: {}", secure_url);
@@ -299,8 +347,8 @@ impl MbCoverDownloadTool {
                         bytes
                     }
                     Err(e) => {
-                        error!("Failed to read response bytes: {:?}", e);
-                        return error_result(&format!("Failed to read image data: {}", e));
+                        error!("Cover download aborted: {} (URL: {})", e, secure_url);
+                        return error_result(&e);
                     }
                 }
             }
@@ -318,6 +366,17 @@ impl MbCoverDownloadTool {
         let full_filename = format!("{}.{}", params.filename, extension);
         let file_path = dir_path.join(&full_filename);
 
+        // Defensive re-check: even with a sanitized filename, refuse to proceed if the
+        // resulting path somehow escaped the validated directory.
+        if !file_path.starts_with(&dir_path) {
+            error!(
+                "Resolved cover path '{}' escapes validated directory '{}'",
+                file_path.display(),
+                dir_path.display()
+            );
+            return error_result("Resolved cover path escapes the validated directory");
+        }
+
         // 10. Check if file exists
         if file_path.exists() && !params.overwrite {
             warn!("File already exists: {}", file_path.display());
@@ -327,8 +386,9 @@ impl MbCoverDownloadTool {
             ));
         }
 
-        // 11. Write the file
-        if let Err(e) = std::fs::write(&file_path, &image_bytes) {
+        // 11. Write the file atomically: a partial download or process kill
+        //     leaves the existing target (if any) untouched.
+        if let Err(e) = write_atomic(&file_path, &image_bytes) {
             error!("Failed to write file: {:?}", e);
             return error_result(&format!("Failed to write file: {}", e));
         }
@@ -416,20 +476,7 @@ impl MbCoverDownloadTool {
             .join()
             .map_err(|_| "Thread panicked during cover download".to_string())?;
 
-        let mut response = serde_json::json!({
-            "content": result.content,
-            "isError": result.is_error.unwrap_or(false)
-        });
-
-        // Include structured_content if present
-        if let Some(structured) = result.structured_content {
-            response.as_object_mut().unwrap().insert(
-                "structuredContent".to_string(),
-                structured,
-            );
-        }
-
-        Ok(response)
+        crate::domains::tools::http_response::tool_result_to_json(result)
     }
 
     /// Create a Tool model for this tool (metadata).
@@ -659,6 +706,56 @@ mod tests {
         assert_eq!(params.overwrite, false);
     }
 
+    /// Regression test: a `filename` containing `..` must be rejected before any
+    /// network call or filesystem write, even when `path` is a validated directory
+    /// inside the configured root.
+    #[test]
+    fn cover_download_filename_traversal() {
+        use crate::core::config::SecurityConfig;
+        use tempfile::TempDir;
+
+        let root = TempDir::new().unwrap();
+        let mut config = Config::default();
+        config.security = SecurityConfig {
+            root_path: Some(root.path().to_path_buf()),
+            allow_symlinks: true,
+        };
+
+        let params = MbCoverDownloadParams {
+            mbid: "65c70b9f-fdef-4bc0-a5b6-ac4e34252d3c".to_string(),
+            path: root.path().to_string_lossy().to_string(),
+            filename: "../escape".to_string(),
+            thumbnail_size: "500".to_string(),
+            overwrite: false,
+        };
+
+        let result = MbCoverDownloadTool::execute(&params, &config);
+
+        assert!(
+            result.is_error.unwrap_or(false),
+            "Traversal filename should be rejected"
+        );
+
+        // The validated root must remain empty — no file written anywhere.
+        let entries: Vec<_> = std::fs::read_dir(root.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .collect();
+        assert!(
+            entries.is_empty(),
+            "No file should be written when filename is rejected"
+        );
+
+        // And nothing landed at the would-be escape location either.
+        let parent_dir = root.path().parent().unwrap();
+        let escape_jpg = parent_dir.join("escape.jpg");
+        assert!(
+            !escape_jpg.exists(),
+            "Traversal target {:?} must not exist",
+            escape_jpg
+        );
+    }
+
     #[test]
     fn test_params_custom() {
         let json = r#"{
@@ -672,6 +769,39 @@ mod tests {
         assert_eq!(params.filename, "album_art");
         assert_eq!(params.thumbnail_size, "1200");
         assert_eq!(params.overwrite, true);
+    }
+
+    #[test]
+    fn read_with_cap_under_limit() {
+        let data = vec![0u8; 1024];
+        let mut cursor = std::io::Cursor::new(data.clone());
+        let out = read_with_cap(&mut cursor, 4096).unwrap();
+        assert_eq!(out, data);
+    }
+
+    #[test]
+    fn read_with_cap_exactly_at_limit() {
+        let data = vec![1u8; 4096];
+        let mut cursor = std::io::Cursor::new(data.clone());
+        let out = read_with_cap(&mut cursor, 4096).unwrap();
+        assert_eq!(out.len(), 4096);
+    }
+
+    #[test]
+    fn read_with_cap_over_limit_rejected() {
+        let data = vec![2u8; 4097];
+        let mut cursor = std::io::Cursor::new(data);
+        let err = read_with_cap(&mut cursor, 4096).expect_err("should reject");
+        assert!(
+            err.contains("cover too large"),
+            "unexpected error message: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn read_with_cap_constant_is_50mb() {
+        assert_eq!(MAX_COVER_BYTES, 50 * 1024 * 1024);
     }
 
     #[test]

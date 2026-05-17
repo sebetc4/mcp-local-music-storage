@@ -10,14 +10,14 @@ The configuration system uses a centralized, type-safe approach with environment
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    Application Startup                       │
+│                    Application Startup                      │
 └─────────────────────────────────────────────────────────────┘
                             │
                             ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                      main.rs: main()                         │
-│                                                              │
-│  1. Initialize logging                                       │
+│                      main.rs: main()                        │
+│                                                             │
+│  1. Initialize logging                                      │
 │  2. Call Config::from_env()                                 │
 │  3. Create McpServer                                        │
 │  4. Start transport layer                                   │
@@ -26,49 +26,49 @@ The configuration system uses a centralized, type-safe approach with environment
                             ▼
 ┌─────────────────────────────────────────────────────────────┐
 │          src/core/config.rs: Config::from_env()             │
-│                                                              │
-│  ┌────────────────────────────────────────────┐            │
-│  │ 1. dotenvy::dotenv().ok()                  │            │
-│  │    • Load .env file if present             │            │
-│  │    • Merge with system environment         │            │
-│  └────────────────────────────────────────────┘            │
-│                     │                                        │
-│  ┌────────────────────────────────────────────┐            │
-│  │ 2. Create Config with defaults             │            │
-│  │    • ServerConfig::default()               │            │
-│  │    • LoggingConfig::default()              │            │
-│  │    • CredentialsConfig::default()          │            │
-│  └────────────────────────────────────────────┘            │
-│                     │                                        │
-│  ┌────────────────────────────────────────────┐            │
-│  │ 3. Load from environment variables         │            │
-│  │    • std::env::var("MCP_SERVER_NAME")      │            │
-│  │    • std::env::var("MCP_LOG_LEVEL")        │            │
-│  │    • std::env::var("MCP_ACOUSTID_API_KEY") │            │
-│  │    • TransportConfig::from_env()           │            │
-│  └────────────────────────────────────────────┘            │
-│                     │                                        │
-│  ┌────────────────────────────────────────────┐            │
-│  │ 4. Apply validation & logging              │            │
-│  │    • Log loaded API keys (REDACTED)        │            │
-│  │    • Warn if using default keys            │            │
-│  └────────────────────────────────────────────┘            │
-│                     │                                        │
-│                     ▼                                        │
+│                                                             │
+│  ┌────────────────────────────────────────────┐             │
+│  │ 1. dotenvy::dotenv().ok()                  │             │
+│  │    • Load .env file if present             │             │
+│  │    • Merge with system environment         │             │
+│  └────────────────────────────────────────────┘             │
+│                     │                                       │
+│  ┌────────────────────────────────────────────┐             │
+│  │ 2. Create Config with defaults             │             │
+│  │    • ServerConfig::default()               │             │
+│  │    • LoggingConfig::default()              │             │
+│  │    • CredentialsConfig::default()          │             │
+│  └────────────────────────────────────────────┘             │
+│                     │                                       │
+│  ┌────────────────────────────────────────────┐             │
+│  │ 3. Load from environment variables         │             │
+│  │    • std::env::var("MCP_SERVER_NAME")      │             │
+│  │    • std::env::var("MCP_LOG_LEVEL")        │             │
+│  │    • std::env::var("MCP_ACOUSTID_API_KEY") │             │
+│  │    • TransportConfig::from_env()           │             │
+│  └────────────────────────────────────────────┘             │
+│                     │                                       │
+│  ┌────────────────────────────────────────────┐             │
+│  │ 4. Apply validation & logging              │             │
+│  │    • Log loaded API keys (REDACTED)        │             │
+│  │    • Warn if using default keys            │             │
+│  └────────────────────────────────────────────┘             │
+│                     │                                       │
+│                     ▼                                       │
 │               Return Config                                 │
 └─────────────────────────────────────────────────────────────┘
                             │
                             ▼
 ┌─────────────────────────────────────────────────────────────┐
 │           src/core/server.rs: McpServer::new()              │
-│                                                              │
-│  let config = Arc::new(config);  // Wrap for sharing       │
-│                                                              │
+│                                                             │
+│  let config = Arc::new(config);  // Wrap for sharing        │
+│                                                             │
 │  McpServer {                                                │
-│      config: Arc<Config>,         // Store reference       │
-│      tool_router: build_tool_router(config.clone()),       │
-│      resource_service: ResourceService::new(config),       │
-│      prompt_service: PromptService::new(config),           │
+│      config: Arc<Config>,         // Store reference        │
+│      tool_router: build_tool_router(config.clone()),        │
+│      resource_service: ResourceService::new(config),        │
+│      prompt_service: PromptService::new(config),            │
 │  }                                                          │
 └─────────────────────────────────────────────────────────────┘
                             │
@@ -266,8 +266,9 @@ pub fn from_env() -> Self {
 impl Default for CredentialsConfig {
     fn default() -> Self {
         Self {
-            acoustid_api_key: Some("default_key".to_string()),
-            new_api_key: None,  // Or provide default
+            // Credentials default to None — never embed real keys.
+            acoustid_api_key: None,
+            new_api_key: None,
         }
     }
 }

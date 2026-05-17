@@ -49,6 +49,12 @@ pub struct HttpConfig {
     /// Enable CORS for browser clients.
     #[serde(default = "default_cors")]
     pub enable_cors: bool,
+
+    /// Explicit allow-list of CORS origins. When empty, `Any` is only granted
+    /// on loopback hosts; binding to a non-loopback address without an explicit
+    /// origin list refuses startup.
+    #[serde(default)]
+    pub cors_allow_origins: Vec<String>,
 }
 
 #[cfg(any(feature = "tcp", feature = "http"))]
@@ -108,6 +114,7 @@ impl Default for HttpConfig {
             host: default_host(),
             rpc_path: default_rpc_path(),
             enable_cors: default_cors(),
+            cors_allow_origins: Vec::new(),
         }
     }
 }
@@ -138,39 +145,52 @@ impl TransportConfig {
         })
     }
 
-    /// Load transport config from environment variables.
+    /// Load transport config from the process environment.
     pub fn from_env() -> Self {
-        let transport = std::env::var("MCP_TRANSPORT")
-            .unwrap_or_default()
-            .to_lowercase();
+        Self::from_env_with(|name| std::env::var(name).ok())
+    }
+
+    /// Load transport config using a caller-supplied env reader.
+    pub fn from_env_with<F>(read: F) -> Self
+    where
+        F: Fn(&str) -> Option<String>,
+    {
+        let transport = read("MCP_TRANSPORT").unwrap_or_default().to_lowercase();
 
         match transport.as_str() {
             #[cfg(feature = "tcp")]
             "tcp" => {
-                let port = std::env::var("MCP_TCP_PORT")
-                    .ok()
+                let port = read("MCP_TCP_PORT")
                     .and_then(|p| p.parse().ok())
                     .unwrap_or(3000);
-                let host = std::env::var("MCP_TCP_HOST").unwrap_or_else(|_| default_host());
+                let host = read("MCP_TCP_HOST").unwrap_or_else(default_host);
                 Self::Tcp(TcpConfig { port, host })
             }
             #[cfg(feature = "http")]
             "http" => {
-                let port = std::env::var("MCP_HTTP_PORT")
-                    .ok()
+                let port = read("MCP_HTTP_PORT")
                     .and_then(|p| p.parse().ok())
                     .unwrap_or(8080);
-                let host = std::env::var("MCP_HTTP_HOST").unwrap_or_else(|_| default_host());
-                let rpc_path =
-                    std::env::var("MCP_HTTP_PATH").unwrap_or_else(|_| default_rpc_path());
-                let enable_cors = std::env::var("MCP_HTTP_CORS")
-                    .map(|v| v.to_lowercase() != "false" && v != "0")
+                let host = read("MCP_HTTP_HOST").unwrap_or_else(default_host);
+                let rpc_path = read("MCP_HTTP_PATH").unwrap_or_else(default_rpc_path);
+                let enable_cors = read("MCP_HTTP_CORS")
+                    .map(|raw| crate::core::config::parse_bool_env("MCP_HTTP_CORS", &raw, true))
                     .unwrap_or(true);
+                let cors_allow_origins = read("MCP_HTTP_CORS_ORIGINS")
+                    .map(|raw| {
+                        raw.split(',')
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 Self::Http(HttpConfig {
                     port,
                     host,
                     rpc_path,
                     enable_cors,
+                    cors_allow_origins,
                 })
             }
             #[cfg(feature = "stdio")]

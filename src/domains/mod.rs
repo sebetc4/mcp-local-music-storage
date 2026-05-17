@@ -4,6 +4,4 @@
 //! server, following Domain-Driven Design principles for better organization
 //! and scalability.
 
-pub mod prompts;
-pub mod resources;
 pub mod tools;

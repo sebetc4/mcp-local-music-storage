@@ -6,12 +6,13 @@
 
 pub mod config;
 pub mod error;
+pub mod fs_atomic;
 pub mod security;
 pub mod server;
 pub mod transport;
 
 pub use config::Config;
 pub use error::{Error, Result};
-pub use security::{validate_path, PathSecurityError};
+pub use security::{is_safe_filename, validate_path, PathSecurityError};
 pub use server::McpServer;
 pub use transport::{TransportConfig, TransportService};

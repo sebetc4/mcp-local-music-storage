@@ -109,6 +109,16 @@ impl MetadataLevel {
             Self::Full => "recordings releasegroups compress",
         }
     }
+
+    /// Stable wire string for this level. Mirrors the JSON serde form so the
+    /// output never silently shifts if a variant gets renamed in the Rust enum.
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Minimal => "minimal",
+            Self::Basic => "basic",
+            Self::Full => "full",
+        }
+    }
 }
 
 impl Default for MetadataLevel {
@@ -156,6 +166,8 @@ struct AcoustIDResult {
     recordings: Vec<AcoustIDRecording>,
 }
 
+// Only the fields actually consumed at the call sites are typed. Serde silently
+// drops the rest of the AcoustID response — no `#[serde(deny_unknown_fields)]`.
 #[derive(Debug, Deserialize)]
 struct AcoustIDRecording {
     id: String,
@@ -165,9 +177,6 @@ struct AcoustIDRecording {
     duration: Option<f64>,
     #[serde(default)]
     artists: Vec<AcoustIDArtist>,
-    #[allow(dead_code)] // Used for deserialization but not read in current implementation
-    #[serde(default)]
-    releases: Vec<AcoustIDRelease>,
     #[serde(default)]
     releasegroups: Vec<AcoustIDReleaseGroup>,
 }
@@ -175,14 +184,10 @@ struct AcoustIDRecording {
 #[derive(Debug, Clone, Deserialize)]
 struct AcoustIDArtist {
     name: String,
-    #[allow(dead_code)]
-    #[serde(default)]
-    id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct AcoustIDReleaseGroup {
-    #[allow(dead_code)]
     #[serde(default)]
     id: Option<String>,
     #[serde(default)]
@@ -196,55 +201,21 @@ struct AcoustIDReleaseGroup {
 }
 
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)] // Used for deserialization but not read in current implementation
 struct AcoustIDRelease {
-    #[serde(default)]
-    id: Option<String>,
-    #[serde(default)]
-    title: Option<String>,
-    #[serde(default)]
-    country: Option<String>,
-    #[serde(default)]
-    date: Option<AcoustIDDate>,
-    #[serde(default)]
-    track_count: Option<u32>,
-    #[serde(default)]
-    medium_count: Option<u32>,
     #[serde(default)]
     mediums: Vec<AcoustIDMedium>,
 }
 
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)] // Used for deserialization but not read in current implementation
 struct AcoustIDMedium {
-    #[serde(default)]
-    position: Option<u32>,
-    #[serde(default)]
-    format: Option<String>,
-    #[serde(default)]
-    track_count: Option<u32>,
     #[serde(default)]
     tracks: Vec<AcoustIDTrack>,
 }
 
 #[derive(Debug, Deserialize)]
 struct AcoustIDTrack {
-    #[allow(dead_code)]
-    #[serde(default)]
-    id: Option<String>,
-    #[allow(dead_code)]
-    #[serde(default)]
-    position: Option<u32>,
     #[serde(default)]
     title: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)] // Used for deserialization but not read in current implementation
-struct AcoustIDDate {
-    year: Option<u32>,
-    month: Option<u32>,
-    day: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -301,11 +272,17 @@ enum IdentificationError {
 
     #[error(
         "AcoustID API key is invalid or expired.\n\
-            The default public key is no longer valid or has exceeded its rate limits.\n\
             Please set your own API key via environment variable: MCP_ACOUSTID_API_KEY\n\
             You can request a free API key at: https://acoustid.org/api-key"
     )]
     InvalidApiKey,
+
+    #[error(
+        "AcoustID API key is not configured.\n\
+            Set MCP_ACOUSTID_API_KEY before running mb_identify_record.\n\
+            Get a free key at: https://acoustid.org/api-key"
+    )]
+    MissingApiKey,
 }
 
 // ============================================================================
@@ -342,12 +319,16 @@ impl MbIdentifyRecordTool {
     pub fn execute(params: &MbIdentifyRecordParams, config: &Config) -> CallToolResult {
         info!("Starting audio identification");
 
-        // Get API key from config (always present due to default)
-        let api_key = config
-            .credentials
-            .acoustid_api_key
-            .as_deref()
-            .unwrap_or_default();
+        // Bail out before any I/O if no key is configured: the AcoustID API
+        // requires one, and there is no embedded fallback.
+        let api_key = match config.credentials.acoustid_api_key.as_deref() {
+            Some(key) if !key.is_empty() => key,
+            _ => {
+                let err = IdentificationError::MissingApiKey;
+                error!("{}", err);
+                return CallToolResult::error(vec![Content::text(err.to_string())]);
+            }
+        };
 
         match Self::identify_audio_internal(params, api_key, config) {
             Ok((summary, structured_data)) => {
@@ -707,7 +688,7 @@ impl MbIdentifyRecordTool {
 
         let structured_data = IdentificationResult {
             file: file_path.to_string(),
-            metadata_level: format!("{:?}", metadata_level).to_lowercase(),
+            metadata_level: metadata_level.as_str().to_string(),
             matches,
             status: "success".to_string(),
         };
@@ -801,20 +782,7 @@ impl MbIdentifyRecordTool {
             .join()
             .map_err(|_| "Identification thread panicked".to_string())?;
 
-        let mut response = serde_json::json!({
-            "content": result.content,
-            "isError": result.is_error.unwrap_or(false)
-        });
-
-        // Include structured_content if present
-        if let Some(structured) = result.structured_content {
-            response.as_object_mut().unwrap().insert(
-                "structuredContent".to_string(),
-                structured,
-            );
-        }
-
-        Ok(response)
+        crate::domains::tools::http_response::tool_result_to_json(result)
     }
 
     /// Create a Tool model for this tool (metadata).
@@ -886,7 +854,59 @@ mod tests {
 
     #[test]
     fn test_mb_identify_missing_file() {
+        let mut config = Config::default();
+        // Provide a placeholder key so the missing-file error path is exercised
+        // instead of being short-circuited by MissingApiKey.
+        config.credentials.acoustid_api_key = Some("placeholder".to_string());
+
+        let params = MbIdentifyRecordParams {
+            file_path: "/nonexistent/file.mp3".to_string(),
+            limit: 3,
+            metadata_level: MetadataLevel::Basic,
+        };
+
+        let result = MbIdentifyRecordTool::execute(&params, &config);
+        assert!(result.is_error.unwrap_or(false));
+    }
+
+    #[test]
+    fn test_mb_identify_missing_api_key_short_circuits() {
+        // Default config has no AcoustID key. The tool must refuse before any
+        // I/O — even an obviously bogus file path should not produce a "file
+        // not found" error.
         let config = Config::default();
+        assert!(config.credentials.acoustid_api_key.is_none());
+
+        let params = MbIdentifyRecordParams {
+            file_path: "/nonexistent/file.mp3".to_string(),
+            limit: 3,
+            metadata_level: MetadataLevel::Basic,
+        };
+
+        let result = MbIdentifyRecordTool::execute(&params, &config);
+        assert!(result.is_error.unwrap_or(false));
+
+        let body = result
+            .content
+            .iter()
+            .filter_map(|c| c.as_text())
+            .map(|t| t.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            body.contains("MCP_ACOUSTID_API_KEY")
+                && body.contains("https://acoustid.org/api-key"),
+            "expected MissingApiKey guidance, got: {}",
+            body
+        );
+    }
+
+    #[test]
+    fn test_mb_identify_empty_api_key_short_circuits() {
+        // An empty string is treated the same as None.
+        let mut config = Config::default();
+        config.credentials.acoustid_api_key = Some(String::new());
+
         let params = MbIdentifyRecordParams {
             file_path: "/nonexistent/file.mp3".to_string(),
             limit: 3,

@@ -12,6 +12,9 @@ pub enum PathSecurityError {
     #[error("Symlink '{path}' points outside allowed root directory")]
     SymlinkOutsideRoot { path: PathBuf },
 
+    #[error("Symlink '{path}' is not allowed by current security policy")]
+    SymlinkNotAllowed { path: PathBuf },
+
     #[error("Cannot canonicalize path '{path}': {error}")]
     CannotCanonicalize { path: PathBuf, error: io::Error },
 
@@ -24,10 +27,15 @@ pub enum PathSecurityError {
 
 /// Validates that a given path is within the configured security boundaries.
 ///
-/// This function performs the following checks:
-/// 1. Canonicalizes the input path to resolve `.`, `..`, and symlinks
-/// 2. If a root path is configured, ensures the canonical path is within that root
-/// 3. Handles symlinks according to the configured policy
+/// # Symlink policy
+///
+/// * `allow_symlinks = false` (strict): any symlink encountered as the input path is
+///   rejected outright with [`PathSecurityError::SymlinkNotAllowed`], regardless of
+///   where it points.
+/// * `allow_symlinks = true`: symlinks are followed via canonicalization. If the
+///   canonical target lies outside the configured root, the error is reported as
+///   [`PathSecurityError::SymlinkOutsideRoot`] (vs. `OutsideRootDirectory` for plain
+///   `..` traversal) so callers can distinguish the two cases.
 ///
 /// # Arguments
 ///
@@ -38,19 +46,11 @@ pub enum PathSecurityError {
 ///
 /// * `Ok(PathBuf)` - The canonicalized, validated path
 /// * `Err(PathSecurityError)` - If validation fails
-///
-/// # Examples
-///
-/// ```rust,ignore
-/// let config = Config::from_env();
-/// let safe_path = validate_path("/home/user/music/song.mp3", &config)?;
-/// ```
 pub fn validate_path(input_path: &str, config: &Config) -> Result<PathBuf, PathSecurityError> {
     let path = Path::new(input_path);
 
     // If no root path is configured, only do basic canonicalization
     let Some(ref root) = config.security.root_path else {
-        // No restrictions - just ensure path exists and canonicalize if possible
         return canonicalize_path(path);
     };
 
@@ -67,39 +67,34 @@ pub fn validate_path(input_path: &str, config: &Config) -> Result<PathBuf, PathS
         });
     }
 
-    // Handle symlinks according to policy
-    if path.is_symlink() && !config.security.allow_symlinks {
-        // Read the symlink target
-        let target = path.read_link().map_err(|e| PathSecurityError::IoError {
+    // Strict symlink policy: when symlinks are disallowed, reject any symlink encountered
+    // as the input path regardless of where its target lies.
+    let is_symlink = path.is_symlink();
+    if is_symlink && !config.security.allow_symlinks {
+        return Err(PathSecurityError::SymlinkNotAllowed {
+            path: path.to_path_buf(),
+        });
+    }
+
+    // Canonicalize the input path (resolves both `..` traversal and symlinks)
+    let canonical_path =
+        path.canonicalize().map_err(|e| PathSecurityError::CannotCanonicalize {
             path: path.to_path_buf(),
             error: e,
         })?;
 
-        // Canonicalize the target
-        let canonical_target =
-            canonicalize_path(&target).map_err(|_| PathSecurityError::SymlinkOutsideRoot {
-                path: path.to_path_buf(),
-            })?;
-
-        // Verify the symlink target is within the root
-        if !is_within_root(&canonical_target, &canonical_root) {
-            return Err(PathSecurityError::SymlinkOutsideRoot {
-                path: path.to_path_buf(),
-            });
-        }
-    }
-
-    // Canonicalize the input path
-    let canonical_path = path.canonicalize().map_err(|e| PathSecurityError::CannotCanonicalize {
-        path: path.to_path_buf(),
-        error: e,
-    })?;
-
-    // Verify the canonical path is within the root
+    // Verify the canonical path is within the root. Distinguish symlink escapes
+    // from plain `..` traversal so callers can handle the two cases differently.
     if !is_within_root(&canonical_path, &canonical_root) {
-        return Err(PathSecurityError::OutsideRootDirectory {
-            path: canonical_path,
-            root: canonical_root,
+        return Err(if is_symlink {
+            PathSecurityError::SymlinkOutsideRoot {
+                path: path.to_path_buf(),
+            }
+        } else {
+            PathSecurityError::OutsideRootDirectory {
+                path: canonical_path,
+                root: canonical_root,
+            }
         });
     }
 
@@ -272,10 +267,13 @@ mod tests {
         fs::write(&target_file, "test").unwrap();
         symlink(&target_file, &link_file).unwrap();
 
+        // Strict policy: even a symlink whose target is inside the root must be rejected.
         let config = create_test_config(Some(temp_dir.path().to_path_buf()), false);
         let result = validate_path(link_file.to_str().unwrap(), &config);
 
-        // Should fail because symlinks are not allowed by config
-        assert!(result.is_err());
+        assert!(matches!(
+            result,
+            Err(PathSecurityError::SymlinkNotAllowed { .. })
+        ));
     }
 }
