@@ -99,7 +99,8 @@ mod tests {
     fn test_registry_tool_names() {
         let registry = ToolRegistry::new(test_config());
         let names = registry.tool_names();
-        assert_eq!(names.len(), 12);
+        assert_eq!(names.len(), 13);
+        assert!(names.contains(&"embed_cover"));
         assert!(names.contains(&"fs_delete"));
         assert!(names.contains(&"fs_list_dir"));
         assert!(names.contains(&"fs_rename"));

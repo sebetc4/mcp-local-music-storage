@@ -66,7 +66,7 @@ async fn initialize_returns_server_info_and_capabilities() {
 }
 
 #[tokio::test]
-async fn tools_list_returns_all_twelve_tools() {
+async fn tools_list_returns_all_thirteen_tools() {
     let req = json!({
         "jsonrpc": "2.0",
         "id": 2,
@@ -78,13 +78,14 @@ async fn tools_list_returns_all_twelve_tools() {
     let tools = resp["result"]["tools"].as_array().expect("tools array");
     assert_eq!(
         tools.len(),
-        12,
-        "expected 12 tools (the `foreach_tool!` inventory), got {}",
+        13,
+        "expected 13 tools (the `foreach_tool!` inventory), got {}",
         tools.len()
     );
 
     let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
     for expected in [
+        "embed_cover",
         "fs_delete",
         "fs_list_dir",
         "fs_rename",

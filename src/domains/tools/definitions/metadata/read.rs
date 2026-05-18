@@ -17,6 +17,7 @@ use tracing::{info, instrument, warn};
 
 use crate::core::config::Config;
 use crate::core::security::validate_path;
+use crate::domains::tools::definitions::metadata::embed_cover::picture_type_str;
 
 // ============================================================================
 // Tool Parameters
@@ -44,6 +45,21 @@ pub struct MetadataReadResult {
     pub format: String,
     pub metadata: Option<AudioMetadata>,
     pub properties: Option<AudioProperties>,
+    /// Embedded pictures attached to the primary tag (APIC frames, PICTURE
+    /// blocks, covr atoms). Only populated when `include_properties = true`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pictures: Option<Vec<EmbeddedPictureInfo>>,
+}
+
+/// Summary of one embedded picture. Image bytes themselves are deliberately
+/// *not* returned — the agent should call a dedicated tool to extract them
+/// when needed, to keep `read_metadata` responses small.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct EmbeddedPictureInfo {
+    pub picture_type: String,
+    pub mime_type: Option<String>,
+    pub description: Option<String>,
+    pub bytes: usize,
 }
 
 /// Audio metadata tags.
@@ -141,6 +157,24 @@ impl ReadMetadataTool {
             total_tags: tag.item_count(),
         });
 
+        // Build embedded picture summary if properties were requested. Lives
+        // on `Tag`, so we collect them before potentially dropping the borrow.
+        let pictures = if params.include_properties {
+            tagged_file.primary_tag().map(|tag| {
+                tag.pictures()
+                    .iter()
+                    .map(|p| EmbeddedPictureInfo {
+                        picture_type: picture_type_str(&p.pic_type()),
+                        mime_type: p.mime_type().map(|m| m.as_str().to_string()),
+                        description: p.description().map(|s| s.to_string()),
+                        bytes: p.data().len(),
+                    })
+                    .collect::<Vec<_>>()
+            })
+        } else {
+            None
+        };
+
         // Build properties structure if requested
         let properties = if params.include_properties {
             let props = tagged_file.properties();
@@ -178,6 +212,7 @@ impl ReadMetadataTool {
             format: format_str,
             metadata: metadata.clone(),
             properties: properties.clone(),
+            pictures: pictures.clone(),
         };
 
         // Build text summary

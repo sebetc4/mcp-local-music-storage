@@ -13,7 +13,7 @@ pub use mb::{
     MbLabelParams, MbLabelTool, MbRecordingParams, MbRecordingTool, MbReleaseParams, MbReleaseTool,
     MbWorkParams, MbWorkTool,
 };
-pub use metadata::{ReadMetadataTool, WriteMetadataTool};
+pub use metadata::{EmbedCoverTool, ReadMetadataTool, WriteMetadataTool};
 
 /// X-macro listing every tool the server exposes. Editing this list is the
 /// **single source of truth**: `tool_names`, `get_all_tools`, `call_tool`
@@ -44,6 +44,10 @@ macro_rules! foreach_tool {
         );
         $visit!(
             $crate::domains::tools::definitions::WriteMetadataTool,
+            with_config
+        );
+        $visit!(
+            $crate::domains::tools::definitions::EmbedCoverTool,
             with_config
         );
         $visit!(
