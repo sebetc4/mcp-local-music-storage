@@ -3,20 +3,16 @@
 //! This tool provides functionality to search for works (musical compositions).
 //! Works represent the underlying composition, independent of recordings or releases.
 
-use futures::FutureExt;
 use musicbrainz_rs::{
     Search,
     entity::work::{Work, WorkSearchQuery},
 };
-use rmcp::{
-    ErrorData as McpError,
-    handler::server::tool::{ToolCallContext, ToolRoute, schema_for_type},
-    model::{CallToolResult, Tool},
-};
+use rmcp::model::CallToolResult;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use tracing::{error, info};
+use tracing::{error, info, instrument};
 
+use super::MbBlockingTool;
 use super::common::{
     default_limit, error_result, structured_result, validate_limit, work_type_str,
 };
@@ -51,100 +47,23 @@ pub struct WorkInfo {
     pub language: Option<String>,
 }
 
-/// MusicBrainz Work Search Tool implementation.
-#[derive(Debug, Clone)]
+/// MusicBrainz Work Search Tool — unit struct used as a [`MbBlockingTool`] impl host.
 pub struct MbWorkTool;
 
+impl MbBlockingTool for MbWorkTool {
+    type Params = MbWorkParams;
+
+    const NAME: &'static str = "mb_work_search";
+
+    const DESCRIPTION: &'static str = "Search for works (musical compositions) in MusicBrainz. Works represent the underlying composition independent of recordings or releases. Returns structured data with MBIDs, work types, languages, and disambiguation info.";
+
+    #[instrument(skip_all, fields(query = %params.query, limit = params.limit))]
+    fn execute(params: &MbWorkParams) -> CallToolResult {
+        Self::search_works(&params.query, validate_limit(params.limit))
+    }
+}
+
 impl MbWorkTool {
-    /// Tool name as registered in MCP.
-    pub const NAME: &'static str = "mb_work_search";
-
-    /// Tool description shown to clients.
-    pub const DESCRIPTION: &'static str = "Search for works (musical compositions) in MusicBrainz. Works represent the underlying composition independent of recordings or releases. Returns structured data with MBIDs, work types, languages, and disambiguation info.";
-
-    pub fn new() -> Self {
-        Self
-    }
-
-    /// Execute the tool logic (for STDIO/TCP transport via rmcp).
-    pub fn execute(params: &MbWorkParams) -> CallToolResult {
-        let query = params.query.clone();
-        let limit = validate_limit(params.limit);
-
-        Self::search_works(&query, limit)
-    }
-
-    /// HTTP handler for this tool (for HTTP transport).
-    #[cfg(feature = "http")]
-    pub fn http_handler(arguments: serde_json::Value) -> Result<serde_json::Value, String> {
-        let query = arguments
-            .get("query")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| "Missing or invalid 'query' parameter".to_string())?
-            .to_string();
-
-        let limit = arguments
-            .get("limit")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(10) as usize;
-
-        let params = MbWorkParams {
-            query,
-            limit,
-        };
-
-        // Use std::thread::spawn to avoid nested runtime panic.
-        // musicbrainz_rs uses reqwest::blocking which creates its own runtime.
-        let handle = std::thread::spawn(move || Self::execute(&params));
-
-        let result = handle
-            .join()
-            .map_err(|_| "Thread panicked during work search".to_string())?;
-
-        crate::domains::tools::http_response::tool_result_to_json(result)
-    }
-
-    /// Create a Tool model for this tool (metadata).
-    pub fn to_tool() -> Tool {
-        Tool {
-            name: Self::NAME.into(),
-            description: Some(Self::DESCRIPTION.into()),
-            input_schema: schema_for_type::<MbWorkParams>(),
-            annotations: None,
-            output_schema: None,
-            icons: None,
-            meta: None,
-            title: None,
-        }
-    }
-
-    /// Create a ToolRoute for STDIO/TCP transport.
-    pub fn create_route<S>() -> ToolRoute<S>
-    where
-        S: Send + Sync + 'static,
-    {
-        ToolRoute::new_dyn(Self::to_tool(), |ctx: ToolCallContext<'_, S>| {
-            let args = ctx.arguments.clone().unwrap_or_default();
-            async move {
-                let params: MbWorkParams =
-                    serde_json::from_value(serde_json::Value::Object(args))
-                        .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
-
-                // Use std::thread::spawn to avoid nested runtime panic.
-                // musicbrainz_rs uses reqwest::blocking which creates its own runtime,
-                // so we need a completely separate OS thread.
-                let handle = std::thread::spawn(move || Self::execute(&params));
-
-                let result = handle
-                    .join()
-                    .map_err(|_| McpError::internal_error("Thread panicked".to_string(), None))?;
-
-                Ok(result)
-            }
-            .boxed()
-        })
-    }
-
     /// Search for works by title.
     pub fn search_works(query: &str, limit: usize) -> CallToolResult {
         info!("Searching for works matching: {}", query);
@@ -185,12 +104,6 @@ impl MbWorkTool {
                 error_result(&format!("Work search failed: {}", e))
             }
         }
-    }
-}
-
-impl Default for MbWorkTool {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

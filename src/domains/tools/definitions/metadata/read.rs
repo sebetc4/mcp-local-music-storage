@@ -127,18 +127,18 @@ impl ReadMetadataTool {
         let format_str = format!("{:?}", tagged_file.file_type());
 
         // Build metadata structure
-        let metadata = tagged_file.primary_tag().map(|tag| {
-            AudioMetadata {
-                title: tag.title().map(|s| s.to_string()),
-                artist: tag.artist().map(|s| s.to_string()),
-                album: tag.album().map(|s| s.to_string()),
-                album_artist: tag.get_string(&lofty::tag::ItemKey::AlbumArtist).map(|s| s.to_string()),
-                year: tag.year(),
-                track: tag.track(),
-                genre: tag.genre().map(|s| s.to_string()),
-                comment: tag.comment().map(|s| s.to_string()),
-                total_tags: tag.item_count(),
-            }
+        let metadata = tagged_file.primary_tag().map(|tag| AudioMetadata {
+            title: tag.title().map(|s| s.to_string()),
+            artist: tag.artist().map(|s| s.to_string()),
+            album: tag.album().map(|s| s.to_string()),
+            album_artist: tag
+                .get_string(&lofty::tag::ItemKey::AlbumArtist)
+                .map(|s| s.to_string()),
+            year: tag.year(),
+            track: tag.track(),
+            genre: tag.genre().map(|s| s.to_string()),
+            comment: tag.comment().map(|s| s.to_string()),
+            total_tags: tag.item_count(),
         });
 
         // Build properties structure if requested
@@ -186,7 +186,10 @@ impl ReadMetadataTool {
             let artist = meta.artist.as_deref().unwrap_or("Unknown Artist");
             if let Some(ref props) = properties {
                 if let Some(ref duration) = props.duration_formatted {
-                    format!("'{}' by {} ({}, {} tags)", title, artist, duration, meta.total_tags)
+                    format!(
+                        "'{}' by {} ({}, {} tags)",
+                        title, artist, duration, meta.total_tags
+                    )
                 } else {
                     format!("'{}' by {} ({} tags)", title, artist, meta.total_tags)
                 }

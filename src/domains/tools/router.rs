@@ -1,38 +1,31 @@
-//! Tool Router - builds the rmcp ToolRouter from registry.
+//! Tool Router - builds the rmcp [`ToolRouter`] for STDIO/TCP transport.
 //!
-//! This module builds the ToolRouter for STDIO/TCP transport by delegating
-//! to the tool definitions themselves. Each tool knows how to create its own route.
+//! The list of tools is derived from the single [`crate::foreach_tool!`]
+//! X-macro in `definitions/mod.rs`. Adding a tool there propagates here.
 
 use std::sync::Arc;
 
 use rmcp::handler::server::tool::ToolRouter;
 
 use crate::core::config::Config;
-use crate::domains::tools::definitions::MbIdentifyRecordTool;
+use crate::domains::tools::definitions::mb::MbBlockingTool;
 
-use super::definitions::{
-    FsDeleteTool, FsListDirTool, FsRenameTool, MbArtistTool, MbCoverDownloadTool, MbLabelTool,
-    MbRecordingTool, MbReleaseTool, MbWorkTool, ReadMetadataTool, WriteMetadataTool,
-};
-
-/// Build the tool router with all registered tools.
+/// Build the tool router with every tool listed in [`crate::foreach_tool!`].
 pub fn build_tool_router<S>(config: Arc<Config>) -> ToolRouter<S>
 where
     S: Send + Sync + 'static,
 {
-    ToolRouter::new()
-        .with_route(FsDeleteTool::create_route(config.clone()))
-        .with_route(FsListDirTool::create_route(config.clone()))
-        .with_route(FsRenameTool::create_route(config.clone()))
-        .with_route(MbArtistTool::create_route())
-        .with_route(MbCoverDownloadTool::create_route(config.clone()))
-        .with_route(MbIdentifyRecordTool::create_route(config.clone()))
-        .with_route(MbLabelTool::create_route())
-        .with_route(MbRecordingTool::create_route())
-        .with_route(MbReleaseTool::create_route())
-        .with_route(MbWorkTool::create_route())
-        .with_route(ReadMetadataTool::create_route(config.clone()))
-        .with_route(WriteMetadataTool::create_route(config))
+    let mut router = ToolRouter::new();
+    macro_rules! add_route {
+        ($t:ty, with_config) => {
+            router = router.with_route(<$t>::create_route(config.clone()));
+        };
+        ($t:ty, no_config) => {
+            router = router.with_route(<$t>::create_route());
+        };
+    }
+    crate::foreach_tool!(add_route);
+    router
 }
 
 #[cfg(test)]
@@ -64,9 +57,11 @@ mod tests {
         assert!(names.contains(&"mb_identify_record"));
     }
 
+    /// Consistency safety-net. Even though both lists are derived from the
+    /// same `foreach_tool!`, this test ensures any future divergence (e.g.
+    /// someone bypasses the macro) is caught immediately.
     #[test]
     fn test_registry_matches_router() {
-        // Ensure registry and router have the same tools
         let config = test_config();
         let registry = ToolRegistry::new(config.clone());
         let registry_names = registry.tool_names();

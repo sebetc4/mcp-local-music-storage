@@ -4,6 +4,9 @@
 //! - A registry of all available tools
 //! - HTTP dispatch for tool calls (when http feature is enabled)
 //! - Tool metadata for listing
+//!
+//! The four lists (names, metadata, HTTP dispatch, router) are all derived
+//! from the single [`crate::foreach_tool!`] X-macro in `definitions/mod.rs`.
 
 use std::sync::Arc;
 #[cfg(feature = "http")]
@@ -12,22 +15,11 @@ use tracing::warn;
 use rmcp::model::Tool;
 
 use crate::core::config::Config;
-use crate::domains::tools::definitions::MbIdentifyRecordTool;
-
-use super::definitions::{
-    FsDeleteTool, FsListDirTool, FsRenameTool, MbArtistTool, MbCoverDownloadTool, MbLabelTool,
-    MbRecordingTool, MbReleaseTool, MbWorkTool, ReadMetadataTool, WriteMetadataTool,
-};
-
-// ============================================================================
-// Tool Registry
-// ============================================================================
+// Bring the blocking-tool trait into scope so `<NoConfigTool>::NAME`,
+// `to_tool()`, `http_handler()` etc. resolve via the trait impls.
+use crate::domains::tools::definitions::mb::MbBlockingTool;
 
 /// Tool registry - manages all available tools.
-///
-/// This struct provides a central point for:
-/// - Listing all available tools
-/// - Dispatching HTTP tool calls (when http feature is enabled)
 pub struct ToolRegistry {
     config: Arc<Config>,
 }
@@ -38,76 +30,60 @@ impl ToolRegistry {
         Self { config }
     }
 
-    /// Get all tool names.
+    /// Get all tool names. Derived from [`crate::foreach_tool!`].
     pub fn tool_names(&self) -> Vec<&'static str> {
-        vec![
-            FsDeleteTool::NAME,
-            FsListDirTool::NAME,
-            FsRenameTool::NAME,
-            ReadMetadataTool::NAME,
-            WriteMetadataTool::NAME,
-            MbArtistTool::NAME,
-            MbCoverDownloadTool::NAME,
-            MbIdentifyRecordTool::NAME,
-            MbLabelTool::NAME,
-            MbRecordingTool::NAME,
-            MbReleaseTool::NAME,
-            MbWorkTool::NAME,
-        ]
+        let mut names: Vec<&'static str> = Vec::new();
+        macro_rules! push_name {
+            ($t:ty, $_kind:ident) => {
+                names.push(<$t>::NAME);
+            };
+        }
+        crate::foreach_tool!(push_name);
+        names
     }
 
-    /// Get all tools as Tool models (metadata).
-    ///
-    /// This is the single source of truth for all available tools.
-    /// Both HTTP and STDIO/TCP transports use this to get tool metadata.
+    /// Get all tools as [`Tool`] models (metadata). Derived from
+    /// [`crate::foreach_tool!`].
     pub fn get_all_tools() -> Vec<Tool> {
-        vec![
-            FsDeleteTool::to_tool(),
-            FsListDirTool::to_tool(),
-            FsRenameTool::to_tool(),
-            MbArtistTool::to_tool(),
-            MbCoverDownloadTool::to_tool(),
-            MbIdentifyRecordTool::to_tool(),
-            MbLabelTool::to_tool(),
-            MbRecordingTool::to_tool(),
-            MbReleaseTool::to_tool(),
-            MbWorkTool::to_tool(),
-            ReadMetadataTool::to_tool(),
-            WriteMetadataTool::to_tool(),
-        ]
+        let mut tools: Vec<Tool> = Vec::new();
+        macro_rules! push_tool {
+            ($t:ty, $_kind:ident) => {
+                tools.push(<$t>::to_tool());
+            };
+        }
+        crate::foreach_tool!(push_tool);
+        tools
     }
 
-    /// Dispatch an HTTP tool call to the appropriate handler.
-    ///
-    /// This is used by the HTTP transport to call tools.
+    /// Dispatch an HTTP tool call to the appropriate handler. Derived from
+    /// [`crate::foreach_tool!`].
     #[cfg(feature = "http")]
     pub fn call_tool(
         &self,
         name: &str,
         arguments: serde_json::Value,
     ) -> Result<serde_json::Value, String> {
-        match name {
-            FsDeleteTool::NAME => FsDeleteTool::http_handler(arguments, self.config.clone()),
-            FsListDirTool::NAME => FsListDirTool::http_handler(arguments, self.config.clone()),
-            FsRenameTool::NAME => FsRenameTool::http_handler(arguments, self.config.clone()),
-            MbArtistTool::NAME => MbArtistTool::http_handler(arguments),
-            MbCoverDownloadTool::NAME => {
-                MbCoverDownloadTool::http_handler(arguments, self.config.clone())
-            }
-            MbIdentifyRecordTool::NAME => {
-                MbIdentifyRecordTool::http_handler(arguments, self.config.clone())
-            }
-            MbLabelTool::NAME => MbLabelTool::http_handler(arguments),
-            MbRecordingTool::NAME => MbRecordingTool::http_handler(arguments),
-            MbReleaseTool::NAME => MbReleaseTool::http_handler(arguments),
-            MbWorkTool::NAME => MbWorkTool::http_handler(arguments),
-            ReadMetadataTool::NAME => ReadMetadataTool::http_handler(arguments, self.config.clone()),
-            WriteMetadataTool::NAME => WriteMetadataTool::http_handler(arguments, self.config.clone()),
-            _ => {
-                warn!("Unknown tool requested: {}", name);
-                Err(format!("Unknown tool: {}", name))
-            }
+        let config = &self.config;
+        // The `if … { return … }` chain consumes `arguments` at most once,
+        // because the matching arm always early-returns. The borrow checker
+        // tolerates this pattern even though `arguments` is moved into the
+        // chosen `http_handler` call.
+        macro_rules! try_dispatch {
+            ($t:ty, with_config) => {
+                if name == <$t>::NAME {
+                    return <$t>::http_handler(arguments, config.clone());
+                }
+            };
+            ($t:ty, no_config) => {
+                if name == <$t>::NAME {
+                    return <$t>::http_handler(arguments);
+                }
+            };
         }
+        crate::foreach_tool!(try_dispatch);
+
+        warn!("Unknown tool requested: {}", name);
+        Err(format!("Unknown tool: {}", name))
     }
 }
 

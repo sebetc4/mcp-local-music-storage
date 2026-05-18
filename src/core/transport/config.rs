@@ -73,6 +73,10 @@ fn default_cors() -> bool {
 }
 
 impl Default for TransportConfig {
+    // Explicit `return` keeps each cfg-gated branch self-contained and
+    // readable; the alternative (trailing expressions) is brittle when
+    // sibling cfg blocks are added or removed.
+    #[allow(clippy::needless_return)]
     fn default() -> Self {
         #[cfg(feature = "stdio")]
         {

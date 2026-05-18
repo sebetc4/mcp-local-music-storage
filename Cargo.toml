@@ -83,3 +83,15 @@ lto = true
 codegen-units = 1
 opt-level = 3
 strip = true
+
+# Project-wide lint configuration. These are surfaced as warnings, not errors,
+# so the build still passes — but they catch regressions of the rules locked
+# in by CLAUDE.md §2 and Phase 2.1 of the cleanup roadmap.
+#
+# Test code is exempt via `#![cfg_attr(test, allow(...))]` at the crate roots
+# (lib.rs, main.rs) because test fixtures legitimately use `.unwrap()`.
+[lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"
+todo = "warn"
+unimplemented = "warn"

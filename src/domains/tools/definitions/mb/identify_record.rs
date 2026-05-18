@@ -83,13 +83,14 @@ pub struct ReleaseGroupMatch {
 ///
 /// Controls how much information is retrieved from the AcoustID database.
 /// Higher levels provide more data but may take slightly longer to process.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 #[schemars(rename_all = "lowercase")]
 pub enum MetadataLevel {
     /// Only MusicBrainz recording IDs (fastest, use when you only need IDs for further queries)
     Minimal,
     /// Recording IDs with title, artists, and duration (recommended for most cases)
+    #[default]
     Basic,
     /// Complete metadata including release groups, albums, formats, and dates
     Full,
@@ -118,12 +119,6 @@ impl MetadataLevel {
             Self::Basic => "basic",
             Self::Full => "full",
         }
-    }
-}
-
-impl Default for MetadataLevel {
-    fn default() -> Self {
-        Self::Basic
     }
 }
 
@@ -594,7 +589,6 @@ impl MbIdentifyRecordTool {
         Ok(acoustid_response)
     }
 
-
     /// Build both structured results and text summary.
     fn build_results(
         response: &AcoustIDResponse,
@@ -700,10 +694,7 @@ impl MbIdentifyRecordTool {
     }
 
     /// Build a concise text summary from structured data.
-    fn build_text_summary(
-        data: &IdentificationResult,
-        metadata_level: &MetadataLevel,
-    ) -> String {
+    fn build_text_summary(data: &IdentificationResult, metadata_level: &MetadataLevel) -> String {
         if data.matches.is_empty() {
             return "No matches found".to_string();
         }
@@ -718,7 +709,9 @@ impl MbIdentifyRecordTool {
 
         let (title_str, artist_str) = if let Some(rec) = best_recording {
             let title = rec.title.as_deref().unwrap_or("Unknown");
-            let artists = rec.artists.as_ref()
+            let artists = rec
+                .artists
+                .as_ref()
                 .map(|a| a.join(", "))
                 .unwrap_or_else(|| "Unknown Artist".to_string());
             (title, artists)
@@ -894,8 +887,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(
-            body.contains("MCP_ACOUSTID_API_KEY")
-                && body.contains("https://acoustid.org/api-key"),
+            body.contains("MCP_ACOUSTID_API_KEY") && body.contains("https://acoustid.org/api-key"),
             "expected MissingApiKey guidance, got: {}",
             body
         );

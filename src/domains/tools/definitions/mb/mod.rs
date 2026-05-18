@@ -12,6 +12,7 @@
 //! Each tool has handlers for both HTTP and STDIO/TCP transports.
 
 pub mod artist;
+pub mod blocking_tool;
 pub mod common;
 pub mod cover_download;
 pub mod identify_record;
@@ -19,6 +20,8 @@ pub mod label;
 pub mod recording;
 pub mod release;
 pub mod work;
+
+pub use blocking_tool::MbBlockingTool;
 
 // Re-export domain-specific tools
 pub use artist::{MbArtistParams, MbArtistTool};

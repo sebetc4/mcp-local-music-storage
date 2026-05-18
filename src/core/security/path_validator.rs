@@ -55,10 +55,12 @@ pub fn validate_path(input_path: &str, config: &Config) -> Result<PathBuf, PathS
     };
 
     // Canonicalize the root path first
-    let canonical_root = root.canonicalize().map_err(|e| PathSecurityError::IoError {
-        path: root.clone(),
-        error: e,
-    })?;
+    let canonical_root = root
+        .canonicalize()
+        .map_err(|e| PathSecurityError::IoError {
+            path: root.clone(),
+            error: e,
+        })?;
 
     // Check if path exists before canonicalization
     if !path.exists() {
@@ -78,10 +80,11 @@ pub fn validate_path(input_path: &str, config: &Config) -> Result<PathBuf, PathS
 
     // Canonicalize the input path (resolves both `..` traversal and symlinks)
     let canonical_path =
-        path.canonicalize().map_err(|e| PathSecurityError::CannotCanonicalize {
-            path: path.to_path_buf(),
-            error: e,
-        })?;
+        path.canonicalize()
+            .map_err(|e| PathSecurityError::CannotCanonicalize {
+                path: path.to_path_buf(),
+                error: e,
+            })?;
 
     // Verify the canonical path is within the root. Distinguish symlink escapes
     // from plain `..` traversal so callers can handle the two cases differently.
@@ -211,7 +214,10 @@ mod tests {
         let config = create_test_config(Some(temp_dir.path().to_path_buf()), true);
         let result = validate_path(nonexistent.to_str().unwrap(), &config);
 
-        assert!(matches!(result, Err(PathSecurityError::PathNotFound { .. })));
+        assert!(matches!(
+            result,
+            Err(PathSecurityError::PathNotFound { .. })
+        ));
     }
 
     #[cfg(unix)]

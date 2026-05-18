@@ -97,7 +97,7 @@ impl FsRenameTool {
         // If it doesn't exist, validate that its parent is within bounds
         if to_path.exists() {
             match validate_path(&params.to, config) {
-                Ok(_) => {},
+                Ok(_) => {}
                 Err(e) => {
                     warn!("Destination path security validation failed: {}", e);
                     return CallToolResult::error(vec![Content::text(format!(
@@ -111,9 +111,12 @@ impl FsRenameTool {
             if let Some(parent) = to_path.parent() {
                 let parent_str = parent.to_string_lossy().to_string();
                 match validate_path(&parent_str, config) {
-                    Ok(_) => {},
+                    Ok(_) => {}
                     Err(e) => {
-                        warn!("Destination parent directory security validation failed: {}", e);
+                        warn!(
+                            "Destination parent directory security validation failed: {}",
+                            e
+                        );
                         return CallToolResult::error(vec![Content::text(format!(
                             "Destination parent directory security validation failed: {}",
                             e
@@ -507,7 +510,10 @@ mod tests {
         let result = FsRenameTool::execute(&params, &config);
 
         // Verify structured content exists
-        assert!(result.structured_content.is_some(), "structured_content should be present");
+        assert!(
+            result.structured_content.is_some(),
+            "structured_content should be present"
+        );
 
         let structured = result.structured_content.unwrap();
 
@@ -546,7 +552,9 @@ mod tests {
         let config = test_config();
         let result = FsRenameTool::execute(&params, &config);
 
-        let structured = result.structured_content.expect("structured_content should exist");
+        let structured = result
+            .structured_content
+            .expect("structured_content should exist");
 
         // Verify overwritten field is present
         assert_eq!(structured["overwritten"], true);
@@ -582,6 +590,9 @@ mod tests {
         // Verify content has text summary (not full JSON)
         let content_text = serialized["content"][0]["text"].as_str().unwrap();
         assert!(content_text.contains("Successfully"));
-        assert!(!content_text.starts_with('{'), "Text should be summary, not JSON");
+        assert!(
+            !content_text.starts_with('{'),
+            "Text should be summary, not JSON"
+        );
     }
 }

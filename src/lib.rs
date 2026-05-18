@@ -1,3 +1,15 @@
+// Test code legitimately uses `.unwrap()` / `.expect()` on fixtures and
+// builders; only production code is held to the strict rule.
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::todo,
+        clippy::unimplemented
+    )
+)]
+
 //! MCP Server Library
 //!
 //! This crate provides a scalable Model Context Protocol (MCP) server template
@@ -9,9 +21,7 @@
 //!
 //! - **core**: Core infrastructure including configuration, error handling, and the main server
 //! - **domains**: Business logic organized by bounded contexts
-//!   - **tools**: MCP tools that can be executed by clients
-//!   - **resources**: Data resources that can be read by clients
-//!   - **prompts**: Prompt templates for consistent interactions
+//!   - **tools**: MCP tools that can be executed by clients (12 tools across `fs`, `metadata`, `mb`)
 //!
 //! # Example
 //!

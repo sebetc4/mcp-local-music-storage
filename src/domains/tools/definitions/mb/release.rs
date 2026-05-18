@@ -3,21 +3,17 @@
 //! This tool provides functionality to search for releases (albums),
 //! get tracks/recordings in a release, and find all versions of a release group.
 
-use futures::FutureExt;
 use musicbrainz_rs::{
     Fetch, Search,
     entity::release::{Release, ReleaseSearchQuery},
     entity::release_group::{ReleaseGroup, ReleaseGroupSearchQuery},
 };
-use rmcp::{
-    ErrorData as McpError,
-    handler::server::tool::{ToolCallContext, ToolRoute, schema_for_type},
-    model::{CallToolResult, Tool},
-};
+use rmcp::model::CallToolResult;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, instrument};
 
+use super::MbBlockingTool;
 use super::common::{
     default_limit, error_result, extract_year, format_duration, get_artist_name, is_mbid,
     release_group_primary_type_str, structured_result, validate_limit,
@@ -142,117 +138,33 @@ pub struct MbReleaseParams {
     pub limit: usize,
 }
 
-/// MusicBrainz Release Search Tool implementation.
-#[derive(Debug, Clone)]
+/// MusicBrainz Release Search Tool.
 pub struct MbReleaseTool;
 
-impl MbReleaseTool {
-    /// Tool name as registered in MCP.
-    pub const NAME: &'static str = "mb_release_search";
+impl MbBlockingTool for MbReleaseTool {
+    type Params = MbReleaseParams;
 
-    /// Tool description shown to clients.
-    pub const DESCRIPTION: &'static str = "Search for releases (albums) and release groups in MusicBrainz, get track listings, and find all versions of a release group. CRITICAL: The 'query' parameter must contain ONLY the album/release title (e.g., 'OK Computer'), never include artist names, years, or formats - this will cause search failures. Returns structured data with MBIDs, artists, dates, countries, and complete tracklists.";
+    const NAME: &'static str = "mb_release_search";
 
-    pub fn new() -> Self {
-        Self
-    }
+    const DESCRIPTION: &'static str = "Search for releases (albums) and release groups in MusicBrainz, get track listings, and find all versions of a release group. CRITICAL: The 'query' parameter must contain ONLY the album/release title (e.g., 'OK Computer'), never include artist names, years, or formats - this will cause search failures. Returns structured data with MBIDs, artists, dates, countries, and complete tracklists.";
 
-    /// Execute the tool logic (for STDIO/TCP transport via rmcp).
-    pub fn execute(params: &MbReleaseParams) -> CallToolResult {
-        let search_type = params.search_type.clone();
-        let query = params.query.clone();
+    #[instrument(skip_all, fields(search_type = %params.search_type, query = %params.query, limit = params.limit))]
+    fn execute(params: &MbReleaseParams) -> CallToolResult {
         let limit = validate_limit(params.limit);
-
-        match search_type.as_str() {
-            "release" => Self::search_releases(&query, limit),
-            "release_group" => Self::search_release_groups(&query, limit),
-            "release_recordings" => Self::search_release_recordings(&query, limit),
-            "release_group_releases" => Self::search_release_group_releases(&query, limit),
-            _ => error_result(&format!(
+        match params.search_type.as_str() {
+            "release" => Self::search_releases(&params.query, limit),
+            "release_group" => Self::search_release_groups(&params.query, limit),
+            "release_recordings" => Self::search_release_recordings(&params.query, limit),
+            "release_group_releases" => Self::search_release_group_releases(&params.query, limit),
+            other => error_result(&format!(
                 "Unknown search type: {}. Use 'release', 'release_group', 'release_recordings', or 'release_group_releases'",
-                search_type
+                other
             )),
         }
     }
+}
 
-    /// HTTP handler for this tool (for HTTP transport).
-    #[cfg(feature = "http")]
-    pub fn http_handler(arguments: serde_json::Value) -> Result<serde_json::Value, String> {
-        let search_type = arguments
-            .get("search_type")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| "Missing or invalid 'search_type' parameter".to_string())?
-            .to_string();
-
-        let query = arguments
-            .get("query")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| "Missing or invalid 'query' parameter".to_string())?
-            .to_string();
-
-        let limit = arguments
-            .get("limit")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(10) as usize;
-
-        let params = MbReleaseParams {
-            search_type,
-            query,
-            limit,
-        };
-
-        // Use std::thread::spawn to avoid nested runtime panic.
-        // musicbrainz_rs uses reqwest::blocking which creates its own runtime.
-        let handle = std::thread::spawn(move || Self::execute(&params));
-
-        let result = handle
-            .join()
-            .map_err(|_| "Thread panicked during release search".to_string())?;
-
-        crate::domains::tools::http_response::tool_result_to_json(result)
-    }
-
-    /// Create a Tool model for this tool (metadata).
-    pub fn to_tool() -> Tool {
-        Tool {
-            name: Self::NAME.into(),
-            description: Some(Self::DESCRIPTION.into()),
-            input_schema: schema_for_type::<MbReleaseParams>(),
-            annotations: None,
-            output_schema: None,
-            icons: None,
-            meta: None,
-            title: None,
-        }
-    }
-
-    /// Create a ToolRoute for STDIO/TCP transport.
-    pub fn create_route<S>() -> ToolRoute<S>
-    where
-        S: Send + Sync + 'static,
-    {
-        ToolRoute::new_dyn(Self::to_tool(), |ctx: ToolCallContext<'_, S>| {
-            let args = ctx.arguments.clone().unwrap_or_default();
-            async move {
-                let params: MbReleaseParams =
-                    serde_json::from_value(serde_json::Value::Object(args))
-                        .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
-
-                // Use std::thread::spawn to avoid nested runtime panic.
-                // musicbrainz_rs uses reqwest::blocking which creates its own runtime,
-                // so we need a completely separate OS thread.
-                let handle = std::thread::spawn(move || Self::execute(&params));
-
-                let result = handle
-                    .join()
-                    .map_err(|_| McpError::internal_error("Thread panicked".to_string(), None))?;
-
-                Ok(result)
-            }
-            .boxed()
-        })
-    }
-
+impl MbReleaseTool {
     /// Search for releases by title or fetch by MBID.
     pub fn search_releases(query: &str, limit: usize) -> CallToolResult {
         info!("Searching for releases matching: {}", query);
@@ -375,7 +287,10 @@ impl MbReleaseTool {
                 Ok(result) => {
                     let groups: Vec<_> = result.entities.into_iter().take(limit).collect();
                     if groups.is_empty() {
-                        return error_result(&format!("No release groups found for query: {}", query));
+                        return error_result(&format!(
+                            "No release groups found for query: {}",
+                            query
+                        ));
                     }
 
                     let count = groups.len();
@@ -474,9 +389,7 @@ impl MbReleaseTool {
                                     // track doesn't drift subsequent numbers.
                                     position: track.position as usize,
                                     title: recording.title.clone(),
-                                    duration: recording
-                                        .length
-                                        .map(|l| format_duration(l as u64)),
+                                    duration: recording.length.map(|l| format_duration(l as u64)),
                                     recording_mbid: recording.id.clone(),
                                     artist: if track_artist != artist
                                         && track_artist != "Unknown Artist"
@@ -567,22 +480,21 @@ impl MbReleaseTool {
             Ok(release_group) => {
                 let artist = get_artist_name(&release_group.artist_credit);
 
-                let release_versions: Vec<ReleaseVersionInfo> = if let Some(releases) =
-                    &release_group.releases
-                {
-                    releases
-                        .iter()
-                        .take(limit)
-                        .map(|r| ReleaseVersionInfo {
-                            title: r.title.clone(),
-                            mbid: r.id.clone(),
-                            date: r.date.as_ref().map(|d| d.0.clone()),
-                            country: r.country.clone(),
-                        })
-                        .collect()
-                } else {
-                    Vec::new()
-                };
+                let release_versions: Vec<ReleaseVersionInfo> =
+                    if let Some(releases) = &release_group.releases {
+                        releases
+                            .iter()
+                            .take(limit)
+                            .map(|r| ReleaseVersionInfo {
+                                title: r.title.clone(),
+                                mbid: r.id.clone(),
+                                date: r.date.as_ref().map(|d| d.0.clone()),
+                                country: r.country.clone(),
+                            })
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
 
                 let count = release_versions.len();
                 let structured_data = ReleaseGroupReleasesResult {
@@ -609,12 +521,6 @@ impl MbReleaseTool {
                 error_result(&format!("Failed to fetch release group: {}", e))
             }
         }
-    }
-}
-
-impl Default for MbReleaseTool {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

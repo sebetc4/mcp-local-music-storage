@@ -13,6 +13,6 @@ pub mod transport;
 
 pub use config::Config;
 pub use error::{Error, Result};
-pub use security::{is_safe_filename, validate_path, PathSecurityError};
+pub use security::{PathSecurityError, is_safe_filename, validate_path};
 pub use server::McpServer;
 pub use transport::{TransportConfig, TransportService};

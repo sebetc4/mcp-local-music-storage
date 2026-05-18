@@ -41,9 +41,9 @@ pub fn temp_sibling(path: &Path) -> io::Result<PathBuf> {
     let parent = path.parent().ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidInput, "path has no parent directory")
     })?;
-    let file_name = path.file_name().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidInput, "path has no file name")
-    })?;
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no file name"))?;
 
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -137,11 +137,7 @@ mod tests {
         let prefix = format!("{}.tmp.", target_name);
         for entry in std::fs::read_dir(dir).unwrap().flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
-            assert!(
-                !name.starts_with(&prefix),
-                "leftover temp file: {}",
-                name
-            );
+            assert!(!name.starts_with(&prefix), "leftover temp file: {}", name);
         }
     }
 }

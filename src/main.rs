@@ -1,3 +1,14 @@
+// Test code legitimately uses `.unwrap()` / `.expect()` on fixtures.
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::todo,
+        clippy::unimplemented
+    )
+)]
+
 //! MCP Server Entry Point
 //!
 //! This is the main entry point for the MCP server. It initializes logging,

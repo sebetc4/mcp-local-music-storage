@@ -290,8 +290,7 @@ impl WriteMetadataTool {
 
         info!(
             "Successfully wrote metadata to {} ({} fields updated)",
-            params.path,
-            fields_count
+            params.path, fields_count
         );
 
         // Return structured result

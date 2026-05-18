@@ -3,20 +3,16 @@
 //! This tool provides functionality to search for recordings (tracks/songs)
 //! and find which releases contain a specific recording.
 
-use futures::FutureExt;
 use musicbrainz_rs::{
     Fetch, Search,
     entity::recording::{Recording, RecordingSearchQuery},
 };
-use rmcp::{
-    ErrorData as McpError,
-    handler::server::tool::{ToolCallContext, ToolRoute, schema_for_type},
-    model::{CallToolResult, Tool},
-};
+use rmcp::model::CallToolResult;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, instrument};
 
+use super::MbBlockingTool;
 use super::common::{
     default_limit, error_result, extract_year, format_duration, get_artist_name, is_mbid,
     structured_result, validate_limit,
@@ -121,116 +117,31 @@ pub struct ReleaseWithArtist {
     pub country: Option<String>,
 }
 
-/// MusicBrainz Recording Search Tool implementation.
-#[derive(Debug, Clone)]
+/// MusicBrainz Recording Search Tool.
 pub struct MbRecordingTool;
 
-impl MbRecordingTool {
-    /// Tool name as registered in MCP.
-    pub const NAME: &'static str = "mb_recording_search";
+impl MbBlockingTool for MbRecordingTool {
+    type Params = MbRecordingParams;
 
-    /// Tool description shown to clients.
-    pub const DESCRIPTION: &'static str =
-        "Search for recordings (tracks/songs) in MusicBrainz and find which releases contain them. CRITICAL: The 'query' parameter must contain ONLY the track title (e.g., 'Imagine'), never include artist names, album names, or years - this will cause search failures. Returns structured data with MBIDs, artists, durations, and release information.";
+    const NAME: &'static str = "mb_recording_search";
 
-    pub fn new() -> Self {
-        Self
-    }
+    const DESCRIPTION: &'static str = "Search for recordings (tracks/songs) in MusicBrainz and find which releases contain them. CRITICAL: The 'query' parameter must contain ONLY the track title (e.g., 'Imagine'), never include artist names, album names, or years - this will cause search failures. Returns structured data with MBIDs, artists, durations, and release information.";
 
-    /// Execute the tool logic (for STDIO/TCP transport via rmcp).
-    pub fn execute(params: &MbRecordingParams) -> CallToolResult {
-        let search_type = params.search_type.clone();
-        let query = params.query.clone();
+    #[instrument(skip_all, fields(search_type = %params.search_type, query = %params.query, limit = params.limit))]
+    fn execute(params: &MbRecordingParams) -> CallToolResult {
         let limit = validate_limit(params.limit);
-
-        match search_type.as_str() {
-            "recording" => Self::search_recordings(&query, limit),
-            "recording_releases" => Self::search_recording_releases(&query, limit),
-            _ => error_result(&format!(
+        match params.search_type.as_str() {
+            "recording" => Self::search_recordings(&params.query, limit),
+            "recording_releases" => Self::search_recording_releases(&params.query, limit),
+            other => error_result(&format!(
                 "Unknown search type: {}. Use 'recording' or 'recording_releases'",
-                search_type
+                other
             )),
         }
     }
+}
 
-    /// HTTP handler for this tool (for HTTP transport).
-    #[cfg(feature = "http")]
-    pub fn http_handler(arguments: serde_json::Value) -> Result<serde_json::Value, String> {
-        let search_type = arguments
-            .get("search_type")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| "Missing or invalid 'search_type' parameter".to_string())?
-            .to_string();
-
-        let query = arguments
-            .get("query")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| "Missing or invalid 'query' parameter".to_string())?
-            .to_string();
-
-        let limit = arguments
-            .get("limit")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(10) as usize;
-
-        let params = MbRecordingParams {
-            search_type,
-            query,
-            limit,
-        };
-
-        // Use std::thread::spawn to avoid nested runtime panic.
-        // musicbrainz_rs uses reqwest::blocking which creates its own runtime.
-        let handle = std::thread::spawn(move || Self::execute(&params));
-
-        let result = handle
-            .join()
-            .map_err(|_| "Thread panicked during recording search".to_string())?;
-
-        crate::domains::tools::http_response::tool_result_to_json(result)
-    }
-
-    /// Create a Tool model for this tool (metadata).
-    pub fn to_tool() -> Tool {
-        Tool {
-            name: Self::NAME.into(),
-            description: Some(Self::DESCRIPTION.into()),
-            input_schema: schema_for_type::<MbRecordingParams>(),
-            annotations: None,
-            output_schema: None,
-            icons: None,
-            meta: None,
-            title: None,
-        }
-    }
-
-    /// Create a ToolRoute for STDIO/TCP transport.
-    pub fn create_route<S>() -> ToolRoute<S>
-    where
-        S: Send + Sync + 'static,
-    {
-        ToolRoute::new_dyn(Self::to_tool(), |ctx: ToolCallContext<'_, S>| {
-            let args = ctx.arguments.clone().unwrap_or_default();
-            async move {
-                let params: MbRecordingParams =
-                    serde_json::from_value(serde_json::Value::Object(args))
-                        .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
-
-                // Use std::thread::spawn to avoid nested runtime panic.
-                // musicbrainz_rs uses reqwest::blocking which creates its own runtime,
-                // so we need a completely separate OS thread.
-                let handle = std::thread::spawn(move || Self::execute(&params));
-
-                let result = handle
-                    .join()
-                    .map_err(|_| McpError::internal_error("Thread panicked".to_string(), None))?;
-
-                Ok(result)
-            }
-            .boxed()
-        })
-    }
-
+impl MbRecordingTool {
     /// Search for recordings by title or MBID.
     pub fn search_recordings(query: &str, limit: usize) -> CallToolResult {
         info!("Searching for recordings matching: {}", query);
@@ -299,9 +210,7 @@ impl MbRecordingTool {
                     mbid: recording.id,
                     artist: artist.clone(),
                     duration: duration.clone(),
-                    disambiguation: recording
-                        .disambiguation
-                        .filter(|d| !d.is_empty()),
+                    disambiguation: recording.disambiguation.filter(|d| !d.is_empty()),
                     artist_mbids,
                     releases: releases.clone(),
                     genres: genres.clone(),
@@ -309,7 +218,12 @@ impl MbRecordingTool {
 
                 // Build summary
                 let summary = if releases.is_empty() {
-                    format!("'{}' by {} ({})", recording.title, artist, duration.unwrap_or_else(|| "unknown duration".to_string()))
+                    format!(
+                        "'{}' by {} ({})",
+                        recording.title,
+                        artist,
+                        duration.unwrap_or_else(|| "unknown duration".to_string())
+                    )
                 } else {
                     format!(
                         "'{}' by {} ({}) - found on {} release(s)",
@@ -455,12 +369,6 @@ impl MbRecordingTool {
                 error_result(&format!("Failed to fetch recording releases: {}", e))
             }
         }
-    }
-}
-
-impl Default for MbRecordingTool {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

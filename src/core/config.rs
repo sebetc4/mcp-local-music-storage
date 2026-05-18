@@ -50,8 +50,10 @@ pub struct LoggingConfig {
     pub with_timestamps: bool,
 }
 
-/// Configuration for external API credentials.
-#[derive(Clone, Serialize, Deserialize)]
+/// Configuration for external API credentials. Defaults to `None` for every
+/// key — there is intentionally no embedded fallback (see CLAUDE.md §2.2 and
+/// Phase 1.3 of the cleanup roadmap). Callers must set `MCP_ACOUSTID_API_KEY`.
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct CredentialsConfig {
     /// AcoustID API key for audio fingerprinting.
     /// Get a free key at: https://acoustid.org/api-key
@@ -98,16 +100,6 @@ pub fn parse_bool_env(name: &str, raw: &str, default: bool) -> bool {
                 other, name, default
             );
             default
-        }
-    }
-}
-
-impl Default for CredentialsConfig {
-    fn default() -> Self {
-        Self {
-            // No embedded fallback — see CLAUDE.md §2.2 and Phase 1.3 of the
-            // cleanup roadmap. Callers must provide a key via MCP_ACOUSTID_API_KEY.
-            acoustid_api_key: None,
         }
     }
 }
@@ -190,7 +182,10 @@ impl Config {
 
         if let Some(root_path) = read("MCP_ROOT_PATH") {
             config.security.root_path = Some(PathBuf::from(root_path));
-            info!("Path security enabled: root directory set to {:?}", config.security.root_path);
+            info!(
+                "Path security enabled: root directory set to {:?}",
+                config.security.root_path
+            );
         } else {
             warn!(
                 "MCP_ROOT_PATH not set - no path restrictions active. \

@@ -107,7 +107,10 @@ impl FsDeleteTool {
             match fs::read_dir(&target_path) {
                 Ok(mut entries) => {
                     if entries.next().is_some() {
-                        warn!("Directory is not empty and recursive flag is not set: {}", params.path);
+                        warn!(
+                            "Directory is not empty and recursive flag is not set: {}",
+                            params.path
+                        );
                         return CallToolResult::error(vec![Content::text(format!(
                             "Directory is not empty: {}. Use recursive=true to delete it and its contents.",
                             params.path
@@ -475,7 +478,9 @@ mod tests {
         let config = test_config();
         let result = FsDeleteTool::execute(&params, &config);
 
-        let structured = result.structured_content.expect("structured_content should exist");
+        let structured = result
+            .structured_content
+            .expect("structured_content should exist");
 
         // Verify recursive field is present
         assert_eq!(structured["recursive"], true);
@@ -510,6 +515,9 @@ mod tests {
         // Verify content has text summary (not full JSON)
         let content_text = serialized["content"][0]["text"].as_str().unwrap();
         assert!(content_text.contains("Successfully"));
-        assert!(!content_text.starts_with('{'), "Text should be summary, not JSON");
+        assert!(
+            !content_text.starts_with('{'),
+            "Text should be summary, not JSON"
+        );
     }
 }

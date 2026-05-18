@@ -32,8 +32,13 @@ pub enum Error {
     Json(#[from] serde_json::Error),
 
     /// Internal server errors that should not occur under normal operation.
+    ///
+    /// Wraps an [`anyhow::Error`] so the original cause chain (including
+    /// downcasting to the underlying source via `err.downcast_ref::<T>()`) is
+    /// preserved. Construct via [`Error::internal`] or `?` from any
+    /// `anyhow::Error`-producing call.
     #[error("Internal error: {0}")]
-    Internal(String),
+    Internal(#[from] anyhow::Error),
 }
 
 impl Error {
@@ -42,8 +47,11 @@ impl Error {
         Self::Config(msg.into())
     }
 
-    /// Create a new internal error.
+    /// Create a new internal error from a free-form message.
+    ///
+    /// For typed sources, prefer `Error::Internal(anyhow::Error::new(source))`
+    /// or `?`-propagation from an `anyhow::Error`-producing context.
     pub fn internal(msg: impl Into<String>) -> Self {
-        Self::Internal(msg.into())
+        Self::Internal(anyhow::anyhow!(msg.into()))
     }
 }

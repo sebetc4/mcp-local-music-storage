@@ -195,7 +195,10 @@ impl FsListDirTool {
         } else {
             format!(
                 "Found {} directories and {} files in '{}' ({} warnings)",
-                result.dir_count, result.file_count, params.path, result.warnings.len()
+                result.dir_count,
+                result.file_count,
+                params.path,
+                result.warnings.len()
             )
         };
 
@@ -512,7 +515,9 @@ mod tests {
         assert!(text.contains("files"));
 
         // Extract and parse structured content
-        let json = result.structured_content.expect("Expected structured content");
+        let json = result
+            .structured_content
+            .expect("Expected structured content");
         assert_eq!(json["dir_count"], 1);
         assert_eq!(json["file_count"], 2);
 
@@ -553,11 +558,14 @@ mod tests {
         assert!(result.is_error.is_none() || !result.is_error.unwrap());
 
         // Extract structured content
-        let json = result.structured_content.expect("Expected structured content");
+        let json = result
+            .structured_content
+            .expect("Expected structured content");
         let entries = json["entries"].as_array().unwrap();
 
         // Find the file entry
-        let file_entry = entries.iter()
+        let file_entry = entries
+            .iter()
             .find(|e| e["name"].as_str().unwrap() == "test.txt")
             .expect("test.txt not found");
 
@@ -586,13 +594,16 @@ mod tests {
         let result = FsListDirTool::execute(&params, &config);
         assert!(result.is_error.is_none() || !result.is_error.unwrap());
 
-        let json = result.structured_content.expect("Expected structured content");
+        let json = result
+            .structured_content
+            .expect("Expected structured content");
         assert_eq!(json["dir_count"], 1);
         assert_eq!(json["file_count"], 2); // root_file.txt + file_in_dir1.txt
 
         // Verify hierarchical structure
         let entries = json["entries"].as_array().unwrap();
-        let dir_entry = entries.iter()
+        let dir_entry = entries
+            .iter()
             .find(|e| e["name"].as_str().unwrap() == "dir1")
             .expect("dir1 not found");
         assert_eq!(dir_entry["type"], "directory");
@@ -621,17 +632,21 @@ mod tests {
         let result = FsListDirTool::execute(&params, &config);
         assert!(result.is_error.is_none() || !result.is_error.unwrap());
 
-        let json = result.structured_content.expect("Expected structured content");
+        let json = result
+            .structured_content
+            .expect("Expected structured content");
         assert_eq!(json["dir_count"], 2); // dir1, dir2
         assert_eq!(json["file_count"], 2); // root_file.txt, deep_file.txt
 
         // Verify nested structure
         let entries = json["entries"].as_array().unwrap();
-        let dir1 = entries.iter()
+        let dir1 = entries
+            .iter()
             .find(|e| e["name"].as_str().unwrap() == "dir1")
             .expect("dir1 not found");
         let dir1_children = dir1["children"].as_array().unwrap();
-        let dir2 = dir1_children.iter()
+        let dir2 = dir1_children
+            .iter()
             .find(|e| e["name"].as_str().unwrap() == "dir2")
             .expect("dir2 not found");
         assert!(dir2["children"].as_array().unwrap().len() > 0);
@@ -655,7 +670,9 @@ mod tests {
 
         let config = test_config();
         let result = FsListDirTool::execute(&params, &config);
-        let json = result.structured_content.expect("Expected structured content");
+        let json = result
+            .structured_content
+            .expect("Expected structured content");
         assert_eq!(json["file_count"], 1); // Only visible.txt
 
         // With include_hidden
@@ -667,7 +684,9 @@ mod tests {
         };
 
         let result = FsListDirTool::execute(&params, &config);
-        let json = result.structured_content.expect("Expected structured content");
+        let json = result
+            .structured_content
+            .expect("Expected structured content");
         assert_eq!(json["file_count"], 2); // Both .hidden and visible.txt
     }
 

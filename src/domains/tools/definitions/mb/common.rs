@@ -58,10 +58,7 @@ pub fn success_result(content: String) -> CallToolResult {
 }
 
 /// Create a success result with both text summary and structured content.
-pub fn structured_result<T: serde::Serialize>(
-    summary: String,
-    data: T,
-) -> CallToolResult {
+pub fn structured_result<T: serde::Serialize>(summary: String, data: T) -> CallToolResult {
     match serde_json::to_value(&data) {
         Ok(structured) => CallToolResult {
             content: vec![Content::text(summary)],
@@ -95,7 +92,7 @@ pub fn default_limit() -> usize {
 
 /// Validate and clamp limit to allowed range (1-100).
 pub fn validate_limit(limit: usize) -> usize {
-    limit.min(100).max(1)
+    limit.clamp(1, 100)
 }
 
 /// Common HTTP handler helper to extract entity parameter.
@@ -305,7 +302,10 @@ mod tests {
         assert_eq!(work_type_str(&WorkType::AudioDrama), "Audio drama");
         assert_eq!(work_type_str(&WorkType::BeijingOpera), "Beijing opera");
         assert_eq!(work_type_str(&WorkType::Etude), "Étude");
-        assert_eq!(work_type_str(&WorkType::IncidentalMusic), "Incidental music");
+        assert_eq!(
+            work_type_str(&WorkType::IncidentalMusic),
+            "Incidental music"
+        );
         assert_eq!(work_type_str(&WorkType::SongCycle), "Song-cycle");
         assert_eq!(work_type_str(&WorkType::SymphonicPoem), "Symphonic poem");
         // The catch-all surfaces the raw upstream string.

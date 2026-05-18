@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  # Network-dependent integration tests are marked #[ignore]; we never run
+  # `--ignored` in CI so the suite stays deterministic.
+  RUST_BACKTRACE: 1
+
+jobs:
+  build-and-test:
+    name: build + test + clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache cargo registry & target
+        uses: Swatinem/rust-cache@v2
+
+      - name: cargo build --features all
+        run: cargo build --features all --locked
+
+      - name: cargo test --features all
+        # Runs lib + integration tests (round-trip + MCP e2e). Excludes the
+        # #[ignore]'d network tests by design — those are run manually with
+        # `--ignored --test-threads=1`.
+        run: cargo test --features all --locked
+
+      - name: cargo clippy --features all -- -D warnings
+        # Promotes the `[lints.clippy]` warns in Cargo.toml (unwrap_used,
+        # expect_used, todo, unimplemented, plus stock clippy lints) into
+        # build errors for CI. Code that ships must clear them.
+        run: cargo clippy --features all --locked -- -D warnings
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check

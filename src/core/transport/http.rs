@@ -186,21 +186,25 @@ impl HttpTransport {
         format!("{}:{}", self.config.host, self.config.port)
     }
 
-    /// Run the HTTP transport.
-    pub async fn run(self, server: McpServer) -> TransportResult<()> {
-        let addr = self.address();
-
+    /// Build the JSON-RPC router (without CORS) for the given server. Exposed
+    /// for in-process e2e testing via `tower::ServiceExt::oneshot`.
+    pub fn build_router(server: McpServer, rpc_path: &str) -> Router {
         let state = AppState {
             server,
             session: Arc::new(RwLock::new(None)),
         };
-
-        // Build router
-        let mut app = Router::new()
-            .route(&self.config.rpc_path, post(handle_rpc))
+        Router::new()
+            .route(rpc_path, post(handle_rpc))
             .route("/health", get(health_check))
             .route("/", get(root_handler))
-            .with_state(state);
+            .with_state(state)
+    }
+
+    /// Run the HTTP transport.
+    pub async fn run(self, server: McpServer) -> TransportResult<()> {
+        let addr = self.address();
+
+        let mut app = Self::build_router(server, &self.config.rpc_path);
 
         // Resolve and apply CORS policy before binding. Misconfigurations refuse
         // startup so an operator notices immediately instead of silently
@@ -229,10 +233,7 @@ impl HttpTransport {
                     .iter()
                     .map(|o| {
                         HeaderValue::from_str(o).map_err(|e| {
-                            TransportError::init(format!(
-                                "Invalid CORS origin {:?}: {}",
-                                o, e
-                            ))
+                            TransportError::init(format!("Invalid CORS origin {:?}: {}", o, e))
                         })
                     })
                     .collect::<Result<_, _>>()?;

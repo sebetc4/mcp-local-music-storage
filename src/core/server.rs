@@ -14,7 +14,7 @@
 //! The ToolRouter is built dynamically in `domains/tools/router.rs`.
 //! **Adding a new tool does NOT require modifying this file!**
 
-use rmcp::{handler::server::tool::ToolRouter, model::*, ServerHandler, tool_handler};
+use rmcp::{ServerHandler, handler::server::tool::ToolRouter, model::*, tool_handler};
 use std::sync::Arc;
 
 use super::config::Config;
@@ -55,11 +55,6 @@ impl McpServer {
     /// Get the server version.
     pub fn version(&self) -> &str {
         &self.config.server.version
-    }
-
-    /// Get the server configuration (for tool access).
-    pub fn config(&self) -> &Arc<Config> {
-        &self.config
     }
 
     // ========================================================================

@@ -35,10 +35,7 @@ fn read_with_cap<R: Read>(reader: &mut R, cap: u64) -> Result<Vec<u8>, String> {
         .read_to_end(&mut buf)
         .map_err(|e| format!("Failed to read response: {}", e))?;
     if buf.len() as u64 > cap {
-        return Err(format!(
-            "cover too large: > {} bytes, max {}",
-            cap, cap
-        ));
+        return Err(format!("cover too large: > {} bytes, max {}", cap, cap));
     }
     Ok(buf)
 }
@@ -276,8 +273,7 @@ impl MbCoverDownloadTool {
         };
 
         // 7. Get URL for requested size with fallback
-        let (image_url, actual_size) =
-            Self::get_image_url(selected_image, &params.thumbnail_size);
+        let (image_url, actual_size) = Self::get_image_url(selected_image, &params.thumbnail_size);
 
         // Validate URL
         if image_url.is_empty() {
@@ -317,7 +313,10 @@ impl MbCoverDownloadTool {
             Ok(mut response) => {
                 let status = response.status();
                 if !status.is_success() {
-                    error!("HTTP request failed with status: {} for URL: {}", status, secure_url);
+                    error!(
+                        "HTTP request failed with status: {} for URL: {}",
+                        status, secure_url
+                    );
                     return error_result(&format!(
                         "Failed to download image: HTTP {} - URL: {}",
                         status, secure_url
@@ -325,17 +324,17 @@ impl MbCoverDownloadTool {
                 }
 
                 // Reject upfront when the server declares an oversized body.
-                if let Some(declared) = response.content_length() {
-                    if declared > MAX_COVER_BYTES {
-                        error!(
-                            "Cover Content-Length {} exceeds cap {} for URL: {}",
-                            declared, MAX_COVER_BYTES, secure_url
-                        );
-                        return error_result(&format!(
-                            "cover too large: {} bytes, max {}",
-                            declared, MAX_COVER_BYTES
-                        ));
-                    }
+                if let Some(declared) = response.content_length()
+                    && declared > MAX_COVER_BYTES
+                {
+                    error!(
+                        "Cover Content-Length {} exceeds cap {} for URL: {}",
+                        declared, MAX_COVER_BYTES, secure_url
+                    );
+                    return error_result(&format!(
+                        "cover too large: {} bytes, max {}",
+                        declared, MAX_COVER_BYTES
+                    ));
                 }
 
                 match read_with_cap(&mut response, MAX_COVER_BYTES) {
@@ -417,7 +416,10 @@ impl MbCoverDownloadTool {
 
         let summary = format!(
             "Downloaded {} cover ({}) to {} ({} bytes)",
-            image_type, actual_size, file_path.display(), result.file_size_bytes
+            image_type,
+            actual_size,
+            file_path.display(),
+            result.file_size_bytes
         );
 
         info!("{}", summary);
@@ -506,13 +508,14 @@ impl MbCoverDownloadTool {
                     serde_json::from_value(serde_json::Value::Object(args))
                         .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
 
-                // Use std::thread::spawn to avoid nested runtime panic.
-                // musicbrainz_rs and reqwest::blocking both create their own runtime.
-                let handle = std::thread::spawn(move || Self::execute(&params, &config));
-
-                let result = handle.join().map_err(|_| {
-                    McpError::internal_error("Thread panicked".to_string(), None)
-                })?;
+                // `reqwest::blocking` issues blocking HTTP from its own internal
+                // mini-runtime. `spawn_blocking` moves that work onto tokio's
+                // blocking thread pool so the async runtime stays responsive.
+                let result = tokio::task::spawn_blocking(move || Self::execute(&params, &config))
+                    .await
+                    .map_err(|e| {
+                        McpError::internal_error(format!("Task execution failed: {}", e), None)
+                    })?;
 
                 Ok(result)
             }
@@ -551,7 +554,11 @@ impl MbCoverDownloadTool {
                     mbid
                 ));
             }
-            return Err(format!("HTTP {} - {}", status, status.canonical_reason().unwrap_or("Unknown error")));
+            return Err(format!(
+                "HTTP {} - {}",
+                status,
+                status.canonical_reason().unwrap_or("Unknown error")
+            ));
         }
 
         let json_text = response
@@ -560,9 +567,13 @@ impl MbCoverDownloadTool {
 
         info!("Received JSON response ({} bytes)", json_text.len());
 
-        serde_json::from_str(&json_text)
-            .map_err(|e| format!("Failed to parse JSON: {} - Response: {}", e,
-                &json_text.chars().take(200).collect::<String>()))
+        serde_json::from_str(&json_text).map_err(|e| {
+            format!(
+                "Failed to parse JSON: {} - Response: {}",
+                e,
+                &json_text.chars().take(200).collect::<String>()
+            )
+        })
     }
 
     /// Select the best image (Front prioritized, fallback to first available).
@@ -577,9 +588,11 @@ impl MbCoverDownloadTool {
         }
 
         // Priority 2: Image with type "Front"
-        if let Some(img) = coverart.images.iter().find(|img| {
-            img.types.iter().any(|t| t.eq_ignore_ascii_case("front"))
-        }) {
+        if let Some(img) = coverart
+            .images
+            .iter()
+            .find(|img| img.types.iter().any(|t| t.eq_ignore_ascii_case("front")))
+        {
             return Ok(img);
         }
 
@@ -661,7 +674,9 @@ impl MbCoverDownloadTool {
                     })
                     .unwrap_or_else(|| (image.image.clone(), "original".to_string()))
             }
-            "original" | _ => (image.image.clone(), "original".to_string()),
+            // Wildcard captures both `"original"` and any unexpected value —
+            // we always fall back to the full-resolution image.
+            _ => (image.image.clone(), "original".to_string()),
         }
     }
 
@@ -942,8 +957,7 @@ mod tests {
 
         // Verify structured content
         if let Some(structured) = result.structured_content {
-            let cover_result: CoverDownloadResult =
-                serde_json::from_value(structured).unwrap();
+            let cover_result: CoverDownloadResult = serde_json::from_value(structured).unwrap();
             assert!(cover_result.success);
             assert!(cover_result.file_size_bytes > 0);
             assert!(cover_result.file_path.contains("test_cover"));
@@ -998,12 +1012,14 @@ mod tests {
         if result.is_error.unwrap_or(true) {
             eprintln!("Error content: {:?}", result.content);
         }
-        assert!(!result.is_error.unwrap_or(true), "Expected success with legacy format");
+        assert!(
+            !result.is_error.unwrap_or(true),
+            "Expected success with legacy format"
+        );
 
         // Verify structured content
         if let Some(structured) = result.structured_content {
-            let cover_result: CoverDownloadResult =
-                serde_json::from_value(structured).unwrap();
+            let cover_result: CoverDownloadResult = serde_json::from_value(structured).unwrap();
             assert!(cover_result.success);
             assert!(cover_result.file_size_bytes > 0);
             assert_eq!(cover_result.thumbnail_size, "500");

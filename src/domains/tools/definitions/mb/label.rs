@@ -3,20 +3,16 @@
 //! This tool provides functionality to search for labels (record labels/publishers).
 //! Labels represent the companies or organizations that publish music releases.
 
-use futures::FutureExt;
 use musicbrainz_rs::{
     Search,
     entity::label::{Label, LabelSearchQuery},
 };
-use rmcp::{
-    ErrorData as McpError,
-    handler::server::tool::{ToolCallContext, ToolRoute, schema_for_type},
-    model::{CallToolResult, Tool},
-};
+use rmcp::model::CallToolResult;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use tracing::{error, info};
+use tracing::{error, info, instrument};
 
+use super::MbBlockingTool;
 use super::common::{
     default_limit, error_result, label_type_str, structured_result, validate_limit,
 };
@@ -52,100 +48,23 @@ pub struct LabelInfo {
     pub label_code: Option<i32>,
 }
 
-/// MusicBrainz Label Search Tool implementation.
-#[derive(Debug, Clone)]
+/// MusicBrainz Label Search Tool.
 pub struct MbLabelTool;
 
+impl MbBlockingTool for MbLabelTool {
+    type Params = MbLabelParams;
+
+    const NAME: &'static str = "mb_label_search";
+
+    const DESCRIPTION: &'static str = "Search for labels (record labels/publishers) in MusicBrainz. Labels represent the companies or organizations that publish music releases. Returns structured data with MBIDs, label types, countries, label codes, and disambiguation info.";
+
+    #[instrument(skip_all, fields(query = %params.query, limit = params.limit))]
+    fn execute(params: &MbLabelParams) -> CallToolResult {
+        Self::search_labels(&params.query, validate_limit(params.limit))
+    }
+}
+
 impl MbLabelTool {
-    /// Tool name as registered in MCP.
-    pub const NAME: &'static str = "mb_label_search";
-
-    /// Tool description shown to clients.
-    pub const DESCRIPTION: &'static str = "Search for labels (record labels/publishers) in MusicBrainz. Labels represent the companies or organizations that publish music releases. Returns structured data with MBIDs, label types, countries, label codes, and disambiguation info.";
-
-    pub fn new() -> Self {
-        Self
-    }
-
-    /// Execute the tool logic (for STDIO/TCP transport via rmcp).
-    pub fn execute(params: &MbLabelParams) -> CallToolResult {
-        let query = params.query.clone();
-        let limit = validate_limit(params.limit);
-
-        Self::search_labels(&query, limit)
-    }
-
-    /// HTTP handler for this tool (for HTTP transport).
-    #[cfg(feature = "http")]
-    pub fn http_handler(arguments: serde_json::Value) -> Result<serde_json::Value, String> {
-        let query = arguments
-            .get("query")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| "Missing or invalid 'query' parameter".to_string())?
-            .to_string();
-
-        let limit = arguments
-            .get("limit")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(10) as usize;
-
-        let params = MbLabelParams {
-            query,
-            limit,
-        };
-
-        // Use std::thread::spawn to avoid nested runtime panic.
-        // musicbrainz_rs uses reqwest::blocking which creates its own runtime.
-        let handle = std::thread::spawn(move || Self::execute(&params));
-
-        let result = handle
-            .join()
-            .map_err(|_| "Thread panicked during label search".to_string())?;
-
-        crate::domains::tools::http_response::tool_result_to_json(result)
-    }
-
-    /// Create a Tool model for this tool (metadata).
-    pub fn to_tool() -> Tool {
-        Tool {
-            name: Self::NAME.into(),
-            description: Some(Self::DESCRIPTION.into()),
-            input_schema: schema_for_type::<MbLabelParams>(),
-            annotations: None,
-            output_schema: None,
-            icons: None,
-            meta: None,
-            title: None,
-        }
-    }
-
-    /// Create a ToolRoute for STDIO/TCP transport.
-    pub fn create_route<S>() -> ToolRoute<S>
-    where
-        S: Send + Sync + 'static,
-    {
-        ToolRoute::new_dyn(Self::to_tool(), |ctx: ToolCallContext<'_, S>| {
-            let args = ctx.arguments.clone().unwrap_or_default();
-            async move {
-                let params: MbLabelParams =
-                    serde_json::from_value(serde_json::Value::Object(args))
-                        .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
-
-                // Use std::thread::spawn to avoid nested runtime panic.
-                // musicbrainz_rs uses reqwest::blocking which creates its own runtime,
-                // so we need a completely separate OS thread.
-                let handle = std::thread::spawn(move || Self::execute(&params));
-
-                let result = handle
-                    .join()
-                    .map_err(|_| McpError::internal_error("Thread panicked".to_string(), None))?;
-
-                Ok(result)
-            }
-            .boxed()
-        })
-    }
-
     /// Search for labels by name.
     pub fn search_labels(query: &str, limit: usize) -> CallToolResult {
         info!("Searching for labels matching: {}", query);
@@ -187,12 +106,6 @@ impl MbLabelTool {
                 error_result(&format!("Label search failed: {}", e))
             }
         }
-    }
-}
-
-impl Default for MbLabelTool {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
