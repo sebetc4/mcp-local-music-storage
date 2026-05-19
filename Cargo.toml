@@ -37,7 +37,7 @@ all = ["stdio", "tcp", "http"]
 rmcp = { version = "1.7", features = ["server", "transport-io", "macros", "schemars"] }
 
 # Async runtime
-tokio = { version = "1.48", features = ["rt-multi-thread", "macros", "time", "io-std", "io-util", "sync"] }
+tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "time", "io-std", "io-util", "sync"] }
 futures = "0.3.31"
 
 # HTTP server (optional - only with "http" feature)
