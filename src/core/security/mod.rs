@@ -8,4 +8,4 @@ pub mod filename;
 pub mod path_validator;
 
 pub use filename::is_safe_filename;
-pub use path_validator::{PathSecurityError, validate_path};
+pub use path_validator::{PathSecurityError, validate_path, validate_unborn_path};

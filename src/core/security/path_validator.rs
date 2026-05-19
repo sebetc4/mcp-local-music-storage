@@ -104,6 +104,133 @@ pub fn validate_path(input_path: &str, config: &Config) -> Result<PathBuf, PathS
     Ok(canonical_path)
 }
 
+/// Validates a path that does **not** yet exist on disk (typically the
+/// destination of a `mkdir` or cross-directory `move`).
+///
+/// `validate_path` canonicalises its input via `Path::canonicalize`, which
+/// requires the file to exist. For new files / directories we must instead:
+///
+/// 1. lexically normalise the input (resolve `.` / `..` without touching
+///    disk), and
+/// 2. walk up to the deepest existing ancestor and validate *that* against
+///    the configured root using [`validate_path`].
+///
+/// The returned [`PathBuf`] is the absolute target path joined onto the
+/// canonical ancestor — guaranteed to live under the configured root, but
+/// not canonicalised (it can't be: it doesn't exist yet).
+pub fn validate_unborn_path(
+    input_path: &str,
+    config: &Config,
+) -> Result<PathBuf, PathSecurityError> {
+    let path = Path::new(input_path);
+
+    // 1. Absolutise (resolve relative paths against the current working dir).
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|e| PathSecurityError::IoError {
+                path: path.to_path_buf(),
+                error: e,
+            })?
+            .join(path)
+    };
+
+    // 2. Lexically resolve `.` and `..`. Since the path doesn't fully exist
+    // we cannot rely on canonicalize, but `..` traversal must still be caught
+    // before we let it leak past the root.
+    let cleaned = normalize_path(&absolute);
+
+    // 3. Walk up to the deepest existing ancestor.
+    let mut ancestor = cleaned.as_path();
+    while !ancestor.exists() {
+        match ancestor.parent() {
+            // Stop the climb at the filesystem root; if even that doesn't
+            // exist, something is very wrong (or we resolved past the root).
+            Some(parent) if parent != ancestor => ancestor = parent,
+            _ => {
+                return Err(PathSecurityError::PathNotFound {
+                    path: cleaned.clone(),
+                });
+            }
+        }
+    }
+
+    // 4. Validate the existing ancestor against the configured root. This
+    // also enforces the symlink policy: a symlinked ancestor pointing
+    // outside the root is rejected exactly as it would be for an existing
+    // file path.
+    let canonical_ancestor = validate_path(&ancestor.to_string_lossy(), config)?;
+
+    // 5. Stitch the not-yet-existing suffix onto the canonical ancestor.
+    let suffix = cleaned
+        .strip_prefix(ancestor)
+        .map_err(|_| PathSecurityError::OutsideRootDirectory {
+            path: cleaned.clone(),
+            root: ancestor.to_path_buf(),
+        })?;
+
+    // Short-circuit: the input path already exists (suffix is empty). Joining
+    // an empty path onto `canonical_ancestor` would tack on a trailing
+    // separator — `fs::rename` and other POSIX calls then treat the target as
+    // a directory and reject it. Return the canonical ancestor verbatim.
+    if suffix.as_os_str().is_empty() {
+        return Ok(canonical_ancestor);
+    }
+
+    // Defensive: `normalize_path` already strips `..`, so any survivor here
+    // would mean an upstream bug — reject rather than risk a traversal.
+    if suffix
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(PathSecurityError::OutsideRootDirectory {
+            path: cleaned.clone(),
+            root: canonical_ancestor.clone(),
+        });
+    }
+
+    let final_path = canonical_ancestor.join(suffix);
+
+    // 6. Final sanity check — the join must still land inside the canonical
+    // ancestor (which itself sits under the root).
+    if !final_path.starts_with(&canonical_ancestor) {
+        return Err(PathSecurityError::OutsideRootDirectory {
+            path: final_path,
+            root: canonical_ancestor,
+        });
+    }
+
+    Ok(final_path)
+}
+
+/// Resolve `.` / `..` components in a path lexically (no filesystem access).
+/// Used by [`validate_unborn_path`] so that traversal attempts in
+/// not-yet-existing paths are caught before we hand the path to `mkdir` or
+/// `rename`.
+fn normalize_path(p: &Path) -> PathBuf {
+    use std::path::Component;
+
+    let mut out: Vec<Component> = Vec::new();
+    for comp in p.components() {
+        match comp {
+            Component::CurDir => {}
+            Component::ParentDir => match out.last() {
+                Some(Component::Normal(_)) => {
+                    out.pop();
+                }
+                // Cannot escape the root — drop a `..` that would try to.
+                Some(Component::Prefix(_)) | Some(Component::RootDir) | None => {}
+                // Relative-path edge case: stack of `..` accumulates.
+                Some(Component::ParentDir) => out.push(comp),
+                Some(Component::CurDir) => unreachable!("CurDir filtered earlier"),
+            },
+            other => out.push(other),
+        }
+    }
+    out.iter().collect()
+}
+
 /// Checks if a path is within (or equal to) a root directory
 fn is_within_root(path: &Path, root: &Path) -> bool {
     path.starts_with(root)
@@ -258,6 +385,86 @@ mod tests {
         assert!(matches!(
             result,
             Err(PathSecurityError::SymlinkOutsideRoot { .. })
+        ));
+    }
+
+    #[test]
+    fn unborn_path_under_root_returns_target() {
+        let root = TempDir::new().unwrap();
+        let config = create_test_config(Some(root.path().to_path_buf()), true);
+
+        // root/new/album doesn't exist yet — should be accepted (root exists).
+        let target = root.path().join("new").join("album");
+        let result = validate_unborn_path(target.to_str().unwrap(), &config).unwrap();
+
+        // Returned path lives under the canonical root.
+        let canonical_root = root.path().canonicalize().unwrap();
+        assert!(result.starts_with(&canonical_root));
+        assert!(result.ends_with("new/album"));
+        // And the directory was NOT created — pure validation, no I/O on the target.
+        assert!(!target.exists());
+    }
+
+    #[test]
+    fn unborn_path_rejects_traversal() {
+        let root = TempDir::new().unwrap();
+        let config = create_test_config(Some(root.path().to_path_buf()), true);
+
+        // root/foo/../../escape resolves lexically to <parent of root>/escape,
+        // which sits outside the configured root.
+        let traversal = root.path().join("foo").join("..").join("..").join("escape");
+        let result = validate_unborn_path(traversal.to_str().unwrap(), &config);
+        assert!(matches!(
+            result,
+            Err(PathSecurityError::OutsideRootDirectory { .. })
+        ));
+    }
+
+    #[test]
+    fn unborn_path_resolves_dot_components() {
+        let root = TempDir::new().unwrap();
+        let config = create_test_config(Some(root.path().to_path_buf()), true);
+
+        // root/./a/./b should resolve to root/a/b.
+        let weird = root.path().join(".").join("a").join(".").join("b");
+        let result = validate_unborn_path(weird.to_str().unwrap(), &config).unwrap();
+
+        let canonical_root = root.path().canonicalize().unwrap();
+        assert_eq!(result, canonical_root.join("a").join("b"));
+    }
+
+    #[test]
+    fn unborn_path_walks_up_through_missing_ancestors() {
+        let root = TempDir::new().unwrap();
+        let config = create_test_config(Some(root.path().to_path_buf()), true);
+
+        // 4 levels deep, none exist: root/A/B/C/D
+        let deep = root.path().join("A").join("B").join("C").join("D");
+        let result = validate_unborn_path(deep.to_str().unwrap(), &config).unwrap();
+
+        let canonical_root = root.path().canonicalize().unwrap();
+        assert_eq!(result, canonical_root.join("A/B/C/D"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unborn_path_rejects_symlinked_ancestor_when_disallowed() {
+        use std::os::unix::fs::symlink;
+
+        let root = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+
+        // root/link -> outside/, then ask to mkdir root/link/album.
+        let link = root.path().join("link");
+        symlink(outside.path(), &link).unwrap();
+
+        let config = create_test_config(Some(root.path().to_path_buf()), false);
+        let target = link.join("album");
+
+        let result = validate_unborn_path(target.to_str().unwrap(), &config);
+        assert!(matches!(
+            result,
+            Err(PathSecurityError::SymlinkNotAllowed { .. })
         ));
     }
 

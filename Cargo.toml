@@ -3,7 +3,7 @@ name = "music_mcp_server"
 version = "0.1.0"
 edition = "2024"
 description = "A scalable MCP (Model Context Protocol) server template"
-authors = ["Your Name <your.email@example.com>"]
+authors = ["sebetc4 <contact@sebastien>"]
 license = "MIT"
 
 # =============================================================================

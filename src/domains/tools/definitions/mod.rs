@@ -6,14 +6,16 @@
 pub mod fs;
 pub mod mb;
 pub mod metadata;
+pub mod naming;
 
-pub use fs::{FsDeleteTool, FsListDirTool, FsRenameTool};
+pub use fs::{FsDeleteTool, FsListDirTool, FsMkdirTool, FsMoveTool, FsRenameTool};
 pub use mb::{
     MbArtistParams, MbArtistTool, MbCoverDownloadParams, MbCoverDownloadTool, MbIdentifyRecordTool,
     MbLabelParams, MbLabelTool, MbRecordingParams, MbRecordingTool, MbReleaseParams, MbReleaseTool,
     MbWorkParams, MbWorkTool,
 };
 pub use metadata::{EmbedCoverTool, ReadMetadataTool, WriteMetadataTool};
+pub use naming::ApplyNamingSchemeTool;
 
 /// X-macro listing every tool the server exposes. Editing this list is the
 /// **single source of truth**: `tool_names`, `get_all_tools`, `call_tool`
@@ -39,6 +41,14 @@ macro_rules! foreach_tool {
             with_config
         );
         $visit!(
+            $crate::domains::tools::definitions::FsMkdirTool,
+            with_config
+        );
+        $visit!(
+            $crate::domains::tools::definitions::FsMoveTool,
+            with_config
+        );
+        $visit!(
             $crate::domains::tools::definitions::ReadMetadataTool,
             with_config
         );
@@ -48,6 +58,10 @@ macro_rules! foreach_tool {
         );
         $visit!(
             $crate::domains::tools::definitions::EmbedCoverTool,
+            with_config
+        );
+        $visit!(
+            $crate::domains::tools::definitions::ApplyNamingSchemeTool,
             with_config
         );
         $visit!(

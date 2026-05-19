@@ -18,7 +18,7 @@ Today the chain breaks at *embed cover*, *organise*, and *scale*. The phases bel
 
 | Phase | Status | Date | Notes |
 |---|---|---|---|
-| **1 — Workflow Completion** | 🚧 In progress | 2026-05-18 | 1.1 `embed_cover` done (atomic save, JPEG/PNG only, 10 MB cap; `read_metadata` reports pictures when `include_properties=true`). Pending: 1.2 cross-directory move + mkdir, 1.3 path templating. |
+| **1 — Workflow Completion** | ✅ Done | 2026-05-19 | 1.1 `embed_cover` ✅, 1.2 `fs_mkdir` + `fs_move` (+ `validate_unborn_path` helper) ✅, 1.3 `apply_naming_scheme` ✅ (pure templating with sanitisation, fallback chains, `:0Nd` format, refuses absolute paths and `..`). Milestone **A1 — End-to-end** reached. |
 | **2 — Scale & Performance** | ⏳ Not started | — | Recursive audio scan, batch metadata I/O, MusicBrainz cache + throttle. |
 | **3 — Safety & Quality** | ⏳ Not started | — | Multi-operation plan/apply, tag-based MB identification fallback, hash + duplicate detection. |
 | **4 — Harmonisation** | ⏳ Not started | — | Directory-as-source-of-truth workflow: divergence inventory (path-vs-tag), agent-owned manifests for resumable runs. |
@@ -102,17 +102,21 @@ Today `mb_cover_download` writes a JPG sibling to the audio. Most music software
 }
 ```
 
-**Decision needed**: extend `fs_rename` (add `mkdir_parents`, accept cross-dir targets) OR add a separate `fs_move`. Recommended: separate `fs_move` — keeps `fs_rename` narrow (same directory, often within a watched folder) and gives the agent an explicit signal "I am about to traverse directories".
+**Decision needed**: extend `fs_rename` (add `mkdir_parents`, accept cross-dir targets) OR add a separate `fs_move`. Recommended: separate `fs_move` — keeps `fs_rename` narrow (same directory, often within a watched folder) and gives the agent an explicit signal "I am about to traverse directories". **Resolved: separate `fs_move`.**
 
 **Tasks**:
-- [ ] `fs_mkdir` — `validate_path` on the target, then `std::fs::create_dir_all` if `recursive=true`, else `create_dir`. Refuse if target exists and is a file.
-- [ ] `fs_move` — validate both `from` and `to` against the configured root; refuse if `from` already inside the destination tree (would create a loop); atomically rename on same-filesystem, fall back to copy+delete with progress on cross-filesystem (rare on this server but worth handling).
-- [ ] If `mkdir_parents`, ensure all parent components are inside the root via `validate_path` BEFORE creating anything.
-- [ ] Dry-run reports the planned `mkdir` calls + the final rename target.
+- [x] `fs_mkdir` — validates the target via the new `validate_unborn_path` helper, then `std::fs::create_dir_all` if `recursive=true` (default), else `create_dir`. Idempotent (returns `already_existed=true` on existing dirs). Refuses when the target is a file.
+- [x] `fs_move` — validates `from` with `validate_path` and `to` with `validate_unborn_path`; refuses if `to == from` or `to.starts_with(from)` (cycle); atomic same-fs rename, falls back to recursive `copy_dir_recursive` + `remove_dir_all` on `io::ErrorKind::CrossesDevices`. Refuses non-regular entries during the copy fallback.
+- [x] `validate_unborn_path` (new in `core::security`): lexically normalises `.`/`..`, walks up to the deepest existing ancestor, validates that against the root, then stitches the unborn suffix back onto the canonical ancestor. Short-circuits when the input path already exists so we never tack on a trailing `/`.
+- [x] Dry-run reports the would-be created parents + the strategy without touching the filesystem.
 
-**Acceptance**: integration test verifies an inbox file lands at `root/A/B/track.mp3`, the intermediate `A/`, `A/B/` directories now exist, and the source no longer does. A second test refuses a `to` path that escapes the root.
+**Acceptance**: 4 integration tests in `tests/fs_mkdir_move.rs`:
+1. `organise_workflow_inbox_to_library`: inbox/track.mp3 → library/AC-DC/1980 Back in Black/01-01 Hells Bells.mp3 with `mkdir_parents=true`; verifies file landed, source gone, 3 parents reported as created.
+2. `mkdir_then_move_files_into_album`: provision album dir, second mkdir is idempotent, two tracks then move in.
+3. `move_refuses_destination_escaping_root`: absolute path outside the root **and** `..` traversal both refused, source untouched.
+4. `dry_run_reports_plan_without_side_effects`: 3 parents reported, zero filesystem changes.
 
-**Effort**: 1 day.
+**Effort**: 1 day. **Status: done (2026-05-19).**
 
 ---
 
@@ -139,14 +143,14 @@ The agent currently has to assemble target paths by string concatenation. That's
 ```
 
 **Tasks**:
-- [ ] Minimal template language: `{name}`, `{name:format}` (printf-style `:02d`), `{name|fallback}` (use `fallback` field if `name` is absent/empty).
-- [ ] Sanitise each substituted component independently (so `/` inside a title becomes `-`, but the literal `/` separators in the template survive).
-- [ ] Reject templates that would resolve to absolute paths or `..` components.
-- [ ] Unit tests pin: every special character is replaced, missing optional fields use `|fallback`, missing required fields surface a clear error.
+- [x] Minimal template language: `{name}`, `{name:0Nd}` (zero-padded integer), `{name|fallback}` (use `fallback` *field* if `name` is absent/empty), and combined `{name|fallback:0Nd}`.
+- [x] Sanitise each substituted component independently (so `/`, `\`, `:`, `*`, `?`, `"`, `<`, `>`, `|`, control bytes → `-`; trailing dots and whitespace trimmed). Literal separators in the template survive.
+- [x] Reject results that would resolve to absolute paths or `..` components.
+- [x] 18 unit tests covering: roadmap example, fallback (missing + empty), missing required, AC/DC-style injection, all unsafe chars, `sanitise=false` passthrough, format spec (zero-pad, numeric string, non-integer rejection), absolute-path rejection, `..` rejection, unclosed placeholder, invalid format spec, empty placeholder, separator survival, control character replacement, trailing-dot/whitespace trimming, combined fallback + format.
 
-**Acceptance**: 8-10 unit tests covering happy path, AC/DC-style injection, missing fields, format specifiers, fallback syntax. No new integration test needed — pure function.
+**Acceptance**: pure function, no integration test needed. ✅
 
-**Effort**: 1-2 days. The combinatorics of "what does each special char do" eat more time than the code.
+**Effort**: 1-2 days. **Status: done (2026-05-19).**
 
 ---
 
