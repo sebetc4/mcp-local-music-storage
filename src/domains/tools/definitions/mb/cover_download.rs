@@ -483,16 +483,11 @@ impl MbCoverDownloadTool {
 
     /// Create a Tool model for this tool (metadata).
     pub fn to_tool() -> Tool {
-        Tool {
-            name: Self::NAME.into(),
-            description: Some(Self::DESCRIPTION.into()),
-            input_schema: schema_for_type::<MbCoverDownloadParams>(),
-            annotations: None,
-            output_schema: None,
-            icons: None,
-            meta: None,
-            title: None,
-        }
+        Tool::new(
+            Self::NAME,
+            Self::DESCRIPTION,
+            schema_for_type::<MbCoverDownloadParams>(),
+        )
     }
 
     /// Create a ToolRoute for STDIO/TCP transport.

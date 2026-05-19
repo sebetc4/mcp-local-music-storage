@@ -93,16 +93,16 @@ impl McpServer {
 }
 
 /// ServerHandler implementation with tool_handler macro for automatic tool routing.
-#[tool_handler]
+///
+/// `router = self.tool_router` overrides rmcp 1.7's default of `Self::tool_router()`
+/// (a static fn from the `#[tool_router]` derive macro, which we don't use — we
+/// build the router ourselves via [`crate::foreach_tool!`]).
+#[tool_handler(router = self.tool_router)]
 impl ServerHandler for McpServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo {
-            instructions: Some(
-                "MCP server for music library automation: filesystem, audio metadata, and MusicBrainz tooling."
-                    .to_string(),
-            ),
-            capabilities: ServerCapabilities::builder().enable_tools().build(),
-            ..Default::default()
-        }
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            .with_instructions(
+                "MCP server for music library automation: filesystem, audio metadata, and MusicBrainz tooling.",
+            )
     }
 }

@@ -237,20 +237,7 @@ impl ReadMetadataTool {
 
         info!("Successfully read metadata from {}", params.path);
 
-        // Return structured result
-        match serde_json::to_value(&structured_data) {
-            Ok(structured) => CallToolResult {
-                content: vec![Content::text(summary)],
-                structured_content: Some(structured),
-                is_error: Some(false),
-                meta: None,
-            },
-            Err(e) => {
-                warn!("Failed to serialize structured content: {}", e);
-                // Fallback to text-only
-                CallToolResult::success(vec![Content::text(summary)])
-            }
-        }
+        crate::domains::tools::result::structured_ok(summary, &structured_data)
     }
 
     /// HTTP handler for this tool (for HTTP transport).
@@ -284,16 +271,11 @@ impl ReadMetadataTool {
 
     /// Create a Tool model for this tool (metadata).
     pub fn to_tool() -> Tool {
-        Tool {
-            name: Self::NAME.into(),
-            description: Some(Self::DESCRIPTION.into()),
-            input_schema: schema_for_type::<ReadMetadataParams>(),
-            annotations: None,
-            output_schema: None,
-            icons: None,
-            meta: None,
-            title: None,
-        }
+        Tool::new(
+            Self::NAME,
+            Self::DESCRIPTION,
+            schema_for_type::<ReadMetadataParams>(),
+        )
     }
 
     /// Create a ToolRoute for STDIO/TCP transport.

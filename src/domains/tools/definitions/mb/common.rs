@@ -58,20 +58,10 @@ pub fn success_result(content: String) -> CallToolResult {
 }
 
 /// Create a success result with both text summary and structured content.
+/// Thin wrapper preserving the historical mb-tool call site signature; the
+/// real implementation lives in [`crate::domains::tools::result::structured_ok`].
 pub fn structured_result<T: serde::Serialize>(summary: String, data: T) -> CallToolResult {
-    match serde_json::to_value(&data) {
-        Ok(structured) => CallToolResult {
-            content: vec![Content::text(summary)],
-            structured_content: Some(structured),
-            is_error: Some(false),
-            meta: None,
-        },
-        Err(e) => {
-            warn!("Failed to serialize structured content: {}", e);
-            // Fallback to text-only result
-            success_result(summary)
-        }
-    }
+    crate::domains::tools::result::structured_ok(summary, &data)
 }
 
 /// Get artist name from artist credit.

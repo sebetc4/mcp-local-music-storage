@@ -34,7 +34,7 @@ all = ["stdio", "tcp", "http"]
 
 [dependencies]
 # MCP SDK
-rmcp = { version = "0.12", features = ["server", "transport-io", "macros", "schemars"] }
+rmcp = { version = "1.7", features = ["server", "transport-io", "macros", "schemars"] }
 
 # Async runtime
 tokio = { version = "1.48", features = ["rt-multi-thread", "macros", "time", "io-std", "io-util", "sync"] }

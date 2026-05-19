@@ -177,20 +177,9 @@ impl FsRenameTool {
                     },
                 };
 
-                // Return with text summary + structured content. Degrade to a
-                // text-only success if serialization fails.
-                match serde_json::to_value(&result) {
-                    Ok(structured) => CallToolResult {
-                        content: vec![Content::text(summary)],
-                        structured_content: Some(structured),
-                        is_error: Some(false),
-                        meta: None,
-                    },
-                    Err(e) => {
-                        warn!("Failed to serialize structured content: {}", e);
-                        CallToolResult::success(vec![Content::text(summary)])
-                    }
-                }
+                // Return with text summary + structured content via the
+                // shared helper.
+                crate::domains::tools::result::structured_ok(summary, &result)
             }
             Err(e) => {
                 warn!(
@@ -257,16 +246,8 @@ impl FsRenameTool {
 
     /// Create a Tool model for this tool (metadata).
     pub fn to_tool() -> Tool {
-        Tool {
-            name: Self::NAME.into(),
-            description: Some(Self::DESCRIPTION.into()),
-            input_schema: schema_for_type::<FsRenameParams>(),
-            annotations: None,
-            output_schema: Some(schema_for_type::<RenameResult>()),
-            icons: None,
-            meta: None,
-            title: None,
-        }
+        Tool::new(Self::NAME, Self::DESCRIPTION, schema_for_type::<FsRenameParams>())
+            .with_raw_output_schema(schema_for_type::<RenameResult>())
     }
 
     /// Create a ToolRoute for STDIO/TCP transport.

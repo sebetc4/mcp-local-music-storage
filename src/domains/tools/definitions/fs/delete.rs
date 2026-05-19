@@ -164,21 +164,10 @@ impl FsDeleteTool {
                     },
                 };
 
-                // Return with text summary + structured content. If serializing the
-                // structured payload fails, fall back to a text-only success so the
-                // caller still sees the operation succeeded.
-                match serde_json::to_value(&result) {
-                    Ok(structured) => CallToolResult {
-                        content: vec![Content::text(summary)],
-                        structured_content: Some(structured),
-                        is_error: Some(false),
-                        meta: None,
-                    },
-                    Err(e) => {
-                        warn!("Failed to serialize structured content: {}", e);
-                        CallToolResult::success(vec![Content::text(summary)])
-                    }
-                }
+                // Return with text summary + structured content via the
+                // shared helper — preserves the historic
+                // "degrade to text-only on serialize failure" contract.
+                crate::domains::tools::result::structured_ok(summary, &result)
             }
             Err(e) => {
                 warn!("Failed to delete '{}': {}", params.path, e);
@@ -226,16 +215,8 @@ impl FsDeleteTool {
 
     /// Create a Tool model for this tool (metadata).
     pub fn to_tool() -> Tool {
-        Tool {
-            name: Self::NAME.into(),
-            description: Some(Self::DESCRIPTION.into()),
-            input_schema: schema_for_type::<FsDeleteParams>(),
-            annotations: None,
-            output_schema: Some(schema_for_type::<DeleteResult>()),
-            icons: None,
-            meta: None,
-            title: None,
-        }
+        Tool::new(Self::NAME, Self::DESCRIPTION, schema_for_type::<FsDeleteParams>())
+            .with_raw_output_schema(schema_for_type::<DeleteResult>())
     }
 
     /// Create a ToolRoute for STDIO/TCP transport.

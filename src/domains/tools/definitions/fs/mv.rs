@@ -312,16 +312,8 @@ impl FsMoveTool {
     }
 
     pub fn to_tool() -> Tool {
-        Tool {
-            name: Self::NAME.into(),
-            description: Some(Self::DESCRIPTION.into()),
-            input_schema: schema_for_type::<FsMoveParams>(),
-            annotations: None,
-            output_schema: Some(schema_for_type::<MoveResult>()),
-            icons: None,
-            meta: None,
-            title: None,
-        }
+        Tool::new(Self::NAME, Self::DESCRIPTION, schema_for_type::<FsMoveParams>())
+            .with_raw_output_schema(schema_for_type::<MoveResult>())
     }
 
     pub fn create_route<S>(config: Arc<Config>) -> ToolRoute<S>
@@ -381,19 +373,10 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Local alias delegating to the shared helper (rmcp 1.7 made `CallToolResult`
+/// non-exhaustive, so the inline struct literal is no longer possible).
 fn structured_ok<T: Serialize>(summary: String, data: T) -> CallToolResult {
-    match serde_json::to_value(&data) {
-        Ok(structured) => CallToolResult {
-            content: vec![Content::text(summary)],
-            structured_content: Some(structured),
-            is_error: Some(false),
-            meta: None,
-        },
-        Err(e) => {
-            warn!("Failed to serialize structured content: {}", e);
-            CallToolResult::success(vec![Content::text(summary)])
-        }
-    }
+    crate::domains::tools::result::structured_ok(summary, &data)
 }
 
 // ============================================================================

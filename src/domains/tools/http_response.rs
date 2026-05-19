@@ -45,12 +45,8 @@ mod tests {
 
     #[test]
     fn encodes_success_with_structured_content() {
-        let result = CallToolResult {
-            content: vec![Content::text("ok".to_string())],
-            structured_content: Some(serde_json::json!({"count": 3})),
-            is_error: Some(false),
-            meta: None,
-        };
+        let mut result = CallToolResult::success(vec![Content::text("ok".to_string())]);
+        result.structured_content = Some(serde_json::json!({"count": 3}));
         let json = tool_result_to_json(result).unwrap();
         let obj = json.as_object().unwrap();
         assert_eq!(obj.get("isError"), Some(&serde_json::Value::Bool(false)));
@@ -62,12 +58,9 @@ mod tests {
 
     #[test]
     fn missing_is_error_defaults_to_false() {
-        let result = CallToolResult {
-            content: vec![],
-            structured_content: None,
-            is_error: None,
-            meta: None,
-        };
+        // Default-constructed CallToolResult has `is_error = None`; the
+        // tool_result_to_json helper coerces that to `false`.
+        let result = CallToolResult::default();
         let json = tool_result_to_json(result).unwrap();
         assert_eq!(
             json.as_object().unwrap().get("isError"),

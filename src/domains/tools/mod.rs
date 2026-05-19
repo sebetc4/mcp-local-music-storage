@@ -27,8 +27,10 @@ mod error;
 #[cfg(feature = "http")]
 pub mod http_response;
 mod registry;
+pub mod result;
 pub mod router;
 
 pub use error::ToolError;
 pub use registry::ToolRegistry;
+pub use result::structured_ok;
 pub use router::build_tool_router;

@@ -43,16 +43,7 @@ pub trait MbBlockingTool: Send + Sync + 'static {
 
     /// Tool metadata. Derived from [`Self::Params`]'s `JsonSchema`.
     fn to_tool() -> Tool {
-        Tool {
-            name: Self::NAME.into(),
-            description: Some(Self::DESCRIPTION.into()),
-            input_schema: schema_for_type::<Self::Params>(),
-            annotations: None,
-            output_schema: None,
-            icons: None,
-            meta: None,
-            title: None,
-        }
+        Tool::new(Self::NAME, Self::DESCRIPTION, schema_for_type::<Self::Params>())
     }
 
     /// STDIO/TCP route. Deserialises the incoming arguments into

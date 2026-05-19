@@ -212,16 +212,8 @@ impl FsMkdirTool {
     }
 
     pub fn to_tool() -> Tool {
-        Tool {
-            name: Self::NAME.into(),
-            description: Some(Self::DESCRIPTION.into()),
-            input_schema: schema_for_type::<FsMkdirParams>(),
-            annotations: None,
-            output_schema: Some(schema_for_type::<MkdirResult>()),
-            icons: None,
-            meta: None,
-            title: None,
-        }
+        Tool::new(Self::NAME, Self::DESCRIPTION, schema_for_type::<FsMkdirParams>())
+            .with_raw_output_schema(schema_for_type::<MkdirResult>())
     }
 
     pub fn create_route<S>(config: Arc<Config>) -> ToolRoute<S>
@@ -242,19 +234,11 @@ impl FsMkdirTool {
     }
 }
 
+/// Local alias preserving the call-site signature; delegates to the shared
+/// helper introduced by the rmcp 1.7 migration (struct literals are now
+/// blocked by `#[non_exhaustive]`).
 fn structured_ok<T: Serialize>(summary: String, data: T) -> CallToolResult {
-    match serde_json::to_value(&data) {
-        Ok(structured) => CallToolResult {
-            content: vec![Content::text(summary)],
-            structured_content: Some(structured),
-            is_error: Some(false),
-            meta: None,
-        },
-        Err(e) => {
-            warn!("Failed to serialize structured content: {}", e);
-            CallToolResult::success(vec![Content::text(summary)])
-        }
-    }
+    crate::domains::tools::result::structured_ok(summary, &data)
 }
 
 // ============================================================================

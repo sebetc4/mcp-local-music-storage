@@ -328,19 +328,7 @@ impl MbIdentifyRecordTool {
         match Self::identify_audio_internal(params, api_key, config) {
             Ok((summary, structured_data)) => {
                 info!("Audio identification completed successfully");
-                match serde_json::to_value(&structured_data) {
-                    Ok(structured) => CallToolResult {
-                        content: vec![Content::text(summary)],
-                        structured_content: Some(structured),
-                        is_error: Some(false),
-                        meta: None,
-                    },
-                    Err(e) => {
-                        warn!("Failed to serialize structured content: {}", e);
-                        // Fallback to text-only
-                        CallToolResult::success(vec![Content::text(summary)])
-                    }
-                }
+                crate::domains::tools::result::structured_ok(summary, &structured_data)
             }
             Err(e) => {
                 error!("Audio identification failed: {}", e);
@@ -780,16 +768,11 @@ impl MbIdentifyRecordTool {
 
     /// Create a Tool model for this tool (metadata).
     pub fn to_tool() -> Tool {
-        Tool {
-            name: Self::NAME.into(),
-            description: Some(Self::DESCRIPTION.into()),
-            input_schema: schema_for_type::<MbIdentifyRecordParams>(),
-            annotations: None,
-            output_schema: None,
-            icons: None,
-            meta: None,
-            title: None,
-        }
+        Tool::new(
+            Self::NAME,
+            Self::DESCRIPTION,
+            schema_for_type::<MbIdentifyRecordParams>(),
+        )
     }
 
     /// Create a ToolRoute for STDIO/TCP transport.
