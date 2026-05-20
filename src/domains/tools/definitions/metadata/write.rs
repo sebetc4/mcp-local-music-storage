@@ -185,9 +185,12 @@ impl WriteMetadataTool {
             updated_fields.insert("album_artist".to_string(), album_artist.clone());
         }
 
-        // Update year
+        // Update year. lofty 0.24 unified year/recording-date under set_date.
         if let Some(year) = params.year {
-            tag.set_year(year);
+            tag.set_date(lofty::tag::items::Timestamp {
+                year: year as u16,
+                ..Default::default()
+            });
             updated_fields.insert("year".to_string(), year.to_string());
         }
 

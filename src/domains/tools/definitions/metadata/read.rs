@@ -148,9 +148,9 @@ impl ReadMetadataTool {
             artist: tag.artist().map(|s| s.to_string()),
             album: tag.album().map(|s| s.to_string()),
             album_artist: tag
-                .get_string(&lofty::tag::ItemKey::AlbumArtist)
+                .get_string(lofty::tag::ItemKey::AlbumArtist)
                 .map(|s| s.to_string()),
-            year: tag.year(),
+            year: tag.date().map(|t| u32::from(t.year)),
             track: tag.track(),
             genre: tag.genre().map(|s| s.to_string()),
             comment: tag.comment().map(|s| s.to_string()),
