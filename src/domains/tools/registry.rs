@@ -99,7 +99,7 @@ mod tests {
     fn test_registry_tool_names() {
         let registry = ToolRegistry::new(test_config());
         let names = registry.tool_names();
-        assert_eq!(names.len(), 17);
+        assert_eq!(names.len(), 19);
         assert!(names.contains(&"apply_naming_scheme"));
         assert!(names.contains(&"embed_cover"));
         assert!(names.contains(&"fs_delete"));
@@ -108,6 +108,8 @@ mod tests {
         assert!(names.contains(&"fs_move"));
         assert!(names.contains(&"fs_rename"));
         assert!(names.contains(&"fs_scan_audio"));
+        assert!(names.contains(&"read_metadata_batch"));
+        assert!(names.contains(&"write_metadata_batch"));
         assert!(names.contains(&"mb_artist_search"));
         assert!(names.contains(&"mb_cover_download"));
         assert!(names.contains(&"mb_identify_record"));

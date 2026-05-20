@@ -19,7 +19,7 @@ Today the chain breaks at *embed cover*, *organise*, and *scale*. The phases bel
 | Phase | Status | Date | Notes |
 |---|---|---|---|
 | **1 — Workflow Completion** | ✅ Done | 2026-05-19 | 1.1 `embed_cover` ✅, 1.2 `fs_mkdir` + `fs_move` (+ `validate_unborn_path` helper) ✅, 1.3 `apply_naming_scheme` ✅ (pure templating with sanitisation, fallback chains, `:0Nd` format, refuses absolute paths and `..`). Milestone **A1 — End-to-end** reached. |
-| **2 — Scale & Performance** | 🔄 In progress | 2026-05-20 | 2.1 `fs_scan_audio` ✅ (walkdir + lex-sorted DFS, opaque cursor pagination, hard caps 16 depth / 5000 results, symlinks surfaced as warnings). 2.2 batch metadata + 2.3 MB cache/throttle remaining. |
+| **2 — Scale & Performance** | 🔄 In progress | 2026-05-20 | 2.1 `fs_scan_audio` ✅, 2.2 `read_metadata_batch` + `write_metadata_batch` ✅ (sequential iteration over the singletons, `MAX_BATCH=500`, per-item `error`, `stop_on_error` on writes). 2.3 MB cache/throttle remaining. |
 | **3 — Safety & Quality** | ⏳ Not started | — | Multi-operation plan/apply, tag-based MB identification fallback, hash + duplicate detection. |
 | **4 — Harmonisation** | ⏳ Not started | — | Directory-as-source-of-truth workflow: divergence inventory (path-vs-tag), agent-owned manifests for resumable runs. |
 
@@ -212,14 +212,15 @@ The agent currently has to assemble target paths by string concatenation. That's
 ```
 
 **Tasks**:
-- [ ] Each batch tool runs the singletons internally — no logic duplication, just iteration + result aggregation.
-- [ ] Hard cap on batch size (`MAX_BATCH = 500`) to keep one tool call from monopolising the server.
-- [ ] `tokio::task::spawn_blocking` per item with a bounded concurrency (e.g. 8 in parallel) — lofty's parsing is CPU-bound, not I/O-bound, so a small pool wins.
-- [ ] Each result carries its own `error: Option<String>`; the call itself is `ok` even if some items failed (the agent reads the per-item status). Unless `stop_on_error=true`.
+- [x] Each batch tool runs the singletons internally — no logic duplication, just iteration + result aggregation. Batch entries carry `path`, the singleton's structured payload (typed `MetadataReadResult` for reads, `fields_updated` for writes), and an `Option<String>` error.
+- [x] Hard cap on batch size (`MAX_BATCH = 500`) lives in `read_batch.rs` and is reused by the write batch.
+- [ ] `tokio::task::spawn_blocking` per item with a bounded concurrency (e.g. 8 in parallel) — *deferred*. The dominant win is eliminating N×80ms of MCP wire latency by batching, which sequential execution already captures. Adding intra-batch concurrency is a follow-up profile-driven optimisation.
+- [x] Each result carries its own `error: Option<String>`; the call itself is `ok` even if some items failed. `stop_on_error=true` on writes halts the loop and reports `stopped_early`/`skipped` so the caller can pick up where the batch left off.
+- [x] `MetadataReadResult`, `AudioMetadata`, `AudioProperties`, `EmbeddedPictureInfo` gained `Deserialize` so the batch can roundtrip the singleton's structured output through `serde_json::from_value` without re-implementing the read logic.
 
-**Acceptance**: integration test that batch-writes to 5 WAVs (4 valid, 1 missing), asserts overall call succeeds, 4 results have `error=null`, 1 has the expected error message.
+**Acceptance**: integration test that batch-writes to 5 WAVs (4 valid, 1 missing), asserts overall call succeeds, 4 results have `error=null`, 1 has the expected error message. ✅ 4 integration tests in `tests/metadata_batch.rs`: the roadmap scenario, `stop_on_error` halt + skip accounting, empty-list no-op, singleton-vs-batch parity. 7 unit tests covering hard cap, stop_on_error semantics, and empty inputs.
 
-**Effort**: 1 day.
+**Effort**: 1 day. **Status: done (2026-05-20).**
 
 ---
 

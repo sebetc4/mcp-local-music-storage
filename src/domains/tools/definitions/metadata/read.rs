@@ -39,7 +39,7 @@ pub struct ReadMetadataParams {
 // ============================================================================
 
 /// Structured output for metadata read results.
-#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct MetadataReadResult {
     pub file: String,
     pub format: String,
@@ -54,7 +54,7 @@ pub struct MetadataReadResult {
 /// Summary of one embedded picture. Image bytes themselves are deliberately
 /// *not* returned — the agent should call a dedicated tool to extract them
 /// when needed, to keep `read_metadata` responses small.
-#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct EmbeddedPictureInfo {
     pub picture_type: String,
     pub mime_type: Option<String>,
@@ -63,7 +63,7 @@ pub struct EmbeddedPictureInfo {
 }
 
 /// Audio metadata tags.
-#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct AudioMetadata {
     pub title: Option<String>,
     pub artist: Option<String>,
@@ -77,7 +77,7 @@ pub struct AudioMetadata {
 }
 
 /// Audio technical properties.
-#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct AudioProperties {
     pub duration_seconds: Option<u64>,
     pub duration_formatted: Option<String>,
