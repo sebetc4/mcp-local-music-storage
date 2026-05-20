@@ -18,7 +18,7 @@ use super::common::{
 };
 
 /// Parameters for work search operations.
-#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct MbWorkParams {
     /// The search query string (work title).
     #[schemars(description = "Search query (work title)")]
@@ -56,6 +56,9 @@ impl MbBlockingTool for MbWorkTool {
     const NAME: &'static str = "mb_work_search";
 
     const DESCRIPTION: &'static str = "Search for works (musical compositions) in MusicBrainz. Works represent the underlying composition independent of recordings or releases. Returns structured data with MBIDs, work types, languages, and disambiguation info.";
+
+    // Works are static composition records — rarely updated. 7-day TTL.
+    const TTL: std::time::Duration = crate::core::mb_request::TTL_STATIC;
 
     #[instrument(skip_all, fields(query = %params.query, limit = params.limit))]
     fn execute(params: &MbWorkParams) -> CallToolResult {

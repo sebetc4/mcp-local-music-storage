@@ -99,7 +99,7 @@ pub struct ReleaseVersionInfo {
 }
 
 /// Parameters for release search operations.
-#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct MbReleaseParams {
     /// The type of search to perform.
     /// - "release": Search for releases by title

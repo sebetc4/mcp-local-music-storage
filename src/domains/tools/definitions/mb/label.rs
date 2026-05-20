@@ -18,7 +18,7 @@ use super::common::{
 };
 
 /// Parameters for label search operations.
-#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct MbLabelParams {
     /// The search query string (label name).
     #[schemars(description = "Search query (label name)")]
@@ -57,6 +57,9 @@ impl MbBlockingTool for MbLabelTool {
     const NAME: &'static str = "mb_label_search";
 
     const DESCRIPTION: &'static str = "Search for labels (record labels/publishers) in MusicBrainz. Labels represent the companies or organizations that publish music releases. Returns structured data with MBIDs, label types, countries, label codes, and disambiguation info.";
+
+    // Labels rarely change — 7-day TTL keeps tag-write workflows fast.
+    const TTL: std::time::Duration = crate::core::mb_request::TTL_STATIC;
 
     #[instrument(skip_all, fields(query = %params.query, limit = params.limit))]
     fn execute(params: &MbLabelParams) -> CallToolResult {

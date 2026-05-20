@@ -19,7 +19,7 @@ use super::common::{
 };
 
 /// Parameters for artist search operations.
-#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct MbArtistParams {
     /// The type of search to perform.
     /// - "artist": Search for artists by name

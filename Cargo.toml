@@ -74,6 +74,9 @@ chrono = { version = "0.4.44", features = ["serde"] }
 schemars = "1.2.1"
 walkdir = "2.5"
 
+# SQLite (bundled to avoid a libsqlite3-dev system dependency)
+rusqlite = { version = "0.32", features = ["bundled"] }
+
 [dev-dependencies]
 tokio-test = "0.4.5"
 

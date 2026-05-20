@@ -19,7 +19,7 @@ use super::common::{
 };
 
 /// Parameters for recording search operations.
-#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct MbRecordingParams {
     /// The type of search to perform.
     /// - "recording": Search for recordings by title

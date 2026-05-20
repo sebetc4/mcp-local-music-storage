@@ -19,7 +19,7 @@ Today the chain breaks at *embed cover*, *organise*, and *scale*. The phases bel
 | Phase | Status | Date | Notes |
 |---|---|---|---|
 | **1 — Workflow Completion** | ✅ Done | 2026-05-19 | 1.1 `embed_cover` ✅, 1.2 `fs_mkdir` + `fs_move` (+ `validate_unborn_path` helper) ✅, 1.3 `apply_naming_scheme` ✅ (pure templating with sanitisation, fallback chains, `:0Nd` format, refuses absolute paths and `..`). Milestone **A1 — End-to-end** reached. |
-| **2 — Scale & Performance** | 🔄 In progress | 2026-05-20 | 2.1 `fs_scan_audio` ✅, 2.2 `read_metadata_batch` + `write_metadata_batch` ✅ (sequential iteration over the singletons, `MAX_BATCH=500`, per-item `error`, `stop_on_error` on writes). 2.3 MB cache/throttle remaining. |
+| **2 — Scale & Performance** | ✅ Done | 2026-05-20 | 2.1 `fs_scan_audio` ✅, 2.2 `read_metadata_batch` + `write_metadata_batch` ✅, 2.3 MB cache (sqlite, 24h/7d TTL, lazy purge) + throttle (1100ms slots, sync+async) ✅ wired through `MbBlockingTool::execute_cached`. Milestone **A2 — At scale** reached. |
 | **3 — Safety & Quality** | ⏳ Not started | — | Multi-operation plan/apply, tag-based MB identification fallback, hash + duplicate detection. |
 | **4 — Harmonisation** | ⏳ Not started | — | Directory-as-source-of-truth workflow: divergence inventory (path-vs-tag), agent-owned manifests for resumable runs. |
 
@@ -235,15 +235,16 @@ MusicBrainz rate-limits to 1 req/sec. An autonomous run of `mb_release_search` o
 - **Override**: env `MCP_MB_CACHE=off` and `MCP_MB_THROTTLE=off` for debug/testing.
 
 **Tasks**:
-- [ ] New module `core::mb_cache` with `pub async fn cached_or_fetch<T>(key, ttl, fetch_fn)`.
-- [ ] New module `core::mb_throttle` exposing a `Semaphore` via `OnceCell`.
-- [ ] Wire both into `MbBlockingTool` default impls (or the 5 search tools' `execute` bodies) — Phase 3.1 of the previous roadmap already factored these into one place.
-- [ ] Cache invalidation: MBIDs are stable, so TTL is generous; we don't need explicit invalidation.
-- [ ] Doc: explain the cache location and how to clear it (`rm mb.sqlite`).
+- [x] New module `core::mb_cache` — sqlite via `rusqlite` (bundled — no system libsqlite3 dep), table `mb_cache(key TEXT PRIMARY KEY, value TEXT, expires_at INTEGER)`, WAL + NORMAL synchronous for cache-grade durability, lazy purge on read.
+- [x] New module `core::mb_throttle` — sync `wait_sync` + async `wait_async`, both reserve a slot via `Mutex<Instant>` and sleep *outside* the critical section so concurrent acquires queue up naturally.
+- [x] New module `core::mb_request` — `cached_or_fetch_blocking(key, ttl, fetch_fn)` glue that consults the cache, acquires a throttle slot only on miss, and caches successful structured responses on the way back.
+- [x] Wired into `MbBlockingTool` via a default `execute_cached(params)` that derives the cache key from `(NAME, serde_json::to_string(params))`. The trait's `Self::Params` gained a `Serialize` bound; the trait also gained a `TTL` const (default `TTL_ENTITY = 24h`) which `label` and `work` override to `TTL_STATIC = 7d`.
+- [x] Env overrides: `MCP_MB_CACHE=off`, `MCP_MB_THROTTLE=off`, plus `MCP_MB_CACHE_PATH` for non-default locations.
+- [x] Cache invalidation: relying on TTL only. The cache file is documented as expendable — `rm ~/.cache/music-mcp/mb.sqlite` clears everything.
 
-**Acceptance**: integration test that issues the same `mb_artist_search` query twice within 1 second; assert the second call returns identical content without hitting the network (mock the underlying client OR check via timing/feature-flag). Throttle test: 3 distinct queries serially; total elapsed >= 2.2 s.
+**Acceptance**: synthetic tests in `core::mb_cache::tests` (roundtrip, expiry, upsert, persistence across reopens, env-disabled), `core::mb_throttle::tests` (3 acquires ≥ 2 × interval, disabled-mode = no-op), and `core::mb_request::tests` (miss-then-hit invokes fetch once, errors don't cache, text-only responses skip the cache, expired entries re-fetch). 11 new unit tests; no live MB network in the test suite. Per the conversation decision, intra-process MB integration tests against the wired trait stay `#[ignore]`'d alongside the existing network tests.
 
-**Effort**: 1.5 days. Mostly the test harness.
+**Effort**: 1.5 days. **Status: done (2026-05-20). Milestone A2 — At scale reached.**
 
 ---
 
