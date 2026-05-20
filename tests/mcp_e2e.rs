@@ -66,7 +66,7 @@ async fn initialize_returns_server_info_and_capabilities() {
 }
 
 #[tokio::test]
-async fn tools_list_returns_all_twenty_tools() {
+async fn tools_list_returns_all_twenty_three_tools() {
     let req = json!({
         "jsonrpc": "2.0",
         "id": 2,
@@ -78,8 +78,8 @@ async fn tools_list_returns_all_twenty_tools() {
     let tools = resp["result"]["tools"].as_array().expect("tools array");
     assert_eq!(
         tools.len(),
-        20,
-        "expected 20 tools (the `foreach_tool!` inventory), got {}",
+        23,
+        "expected 23 tools (the `foreach_tool!` inventory), got {}",
         tools.len()
     );
 
@@ -88,6 +88,8 @@ async fn tools_list_returns_all_twenty_tools() {
         "apply_naming_scheme",
         "apply_plan",
         "embed_cover",
+        "find_duplicates",
+        "fs_hash",
         "fs_delete",
         "fs_list_dir",
         "fs_mkdir",
@@ -98,6 +100,7 @@ async fn tools_list_returns_all_twenty_tools() {
         "mb_cover_download",
         "mb_identify_record",
         "mb_label_search",
+        "mb_match_from_tags",
         "mb_recording_search",
         "mb_release_search",
         "mb_work_search",

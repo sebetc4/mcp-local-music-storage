@@ -9,11 +9,14 @@ pub mod metadata;
 pub mod naming;
 pub mod plan;
 
-pub use fs::{FsDeleteTool, FsListDirTool, FsMkdirTool, FsMoveTool, FsRenameTool, FsScanAudioTool};
+pub use fs::{
+    FindDuplicatesTool, FsDeleteTool, FsHashTool, FsListDirTool, FsMkdirTool, FsMoveTool,
+    FsRenameTool, FsScanAudioTool,
+};
 pub use mb::{
     MbArtistParams, MbArtistTool, MbCoverDownloadParams, MbCoverDownloadTool, MbIdentifyRecordTool,
-    MbLabelParams, MbLabelTool, MbRecordingParams, MbRecordingTool, MbReleaseParams, MbReleaseTool,
-    MbWorkParams, MbWorkTool,
+    MbLabelParams, MbLabelTool, MbMatchFromTagsParams, MbMatchFromTagsTool, MbRecordingParams,
+    MbRecordingTool, MbReleaseParams, MbReleaseTool, MbWorkParams, MbWorkTool,
 };
 pub use metadata::{
     EmbedCoverTool, ReadMetadataBatchTool, ReadMetadataTool, WriteMetadataBatchTool,
@@ -54,6 +57,11 @@ macro_rules! foreach_tool {
             $crate::domains::tools::definitions::FsScanAudioTool,
             with_config
         );
+        $visit!($crate::domains::tools::definitions::FsHashTool, with_config);
+        $visit!(
+            $crate::domains::tools::definitions::FindDuplicatesTool,
+            with_config
+        );
         $visit!(
             $crate::domains::tools::definitions::ReadMetadataTool,
             with_config
@@ -92,6 +100,10 @@ macro_rules! foreach_tool {
         );
         $visit!($crate::domains::tools::definitions::MbArtistTool, no_config);
         $visit!($crate::domains::tools::definitions::MbLabelTool, no_config);
+        $visit!(
+            $crate::domains::tools::definitions::MbMatchFromTagsTool,
+            no_config
+        );
         $visit!(
             $crate::domains::tools::definitions::MbRecordingTool,
             no_config

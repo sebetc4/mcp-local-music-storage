@@ -43,11 +43,14 @@ mod tests {
     fn test_build_router() {
         let router: ToolRouter<TestServer> = build_tool_router(test_config());
         let tools = router.list_all();
-        assert_eq!(tools.len(), 20);
+        assert_eq!(tools.len(), 23);
 
         let names: Vec<_> = tools.iter().map(|t| t.name.as_ref()).collect();
         assert!(names.contains(&"apply_naming_scheme"));
         assert!(names.contains(&"apply_plan"));
+        assert!(names.contains(&"find_duplicates"));
+        assert!(names.contains(&"fs_hash"));
+        assert!(names.contains(&"mb_match_from_tags"));
         assert!(names.contains(&"embed_cover"));
         assert!(names.contains(&"fs_delete"));
         assert!(names.contains(&"fs_list_dir"));

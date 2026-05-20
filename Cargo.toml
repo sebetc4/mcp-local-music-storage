@@ -73,6 +73,7 @@ dotenvy = "0.15.7"
 chrono = { version = "0.4.44", features = ["serde"] }
 schemars = "1.2.1"
 walkdir = "2.5"
+sha2 = "0.11"
 
 # SQLite (bundled to avoid a libsqlite3-dev system dependency)
 rusqlite = { version = "0.39", features = ["bundled"] }

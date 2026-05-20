@@ -20,7 +20,7 @@ Today the chain breaks at *embed cover*, *organise*, and *scale*. The phases bel
 |---|---|---|---|
 | **1 — Workflow Completion** | ✅ Done | 2026-05-19 | 1.1 `embed_cover` ✅, 1.2 `fs_mkdir` + `fs_move` (+ `validate_unborn_path` helper) ✅, 1.3 `apply_naming_scheme` ✅ (pure templating with sanitisation, fallback chains, `:0Nd` format, refuses absolute paths and `..`). Milestone **A1 — End-to-end** reached. |
 | **2 — Scale & Performance** | ✅ Done | 2026-05-20 | 2.1 `fs_scan_audio` ✅, 2.2 `read_metadata_batch` + `write_metadata_batch` ✅, 2.3 MB cache (sqlite, 24h/7d TTL, lazy purge) + throttle (1100ms slots, sync+async) ✅ wired through `MbBlockingTool::execute_cached`. Milestone **A2 — At scale** reached. |
-| **3 — Safety & Quality** | 🚧 In progress | 2026-05-20 | 3.1 `apply_plan` ✅ (mkdir/move/write_metadata/embed_cover ops; native `dry_run` propagation + validation-only stubs for tag-writing ops; 1000-op cap; documented no-rollback policy with `executed`/`skipped`/`stopped_early` counters). 3.2 + 3.3 not started. |
+| **3 — Safety & Quality** | ✅ Done | 2026-05-20 | 3.1 `apply_plan` ✅ (mkdir/move/write_metadata/embed_cover ops; native `dry_run` propagation + validation-only stubs for tag-writing ops; 1000-op cap; documented no-rollback policy with `executed`/`skipped`/`stopped_early` counters). 3.2 `mb_match_from_tags` ✅ (RecordingMatch-compatible payload, 0.5/0.3/0.2 title/artist/duration weights, default 0.6 confidence floor, shares MB cache + throttle via `MbBlockingTool`). 3.3 `fs_hash` + `find_duplicates` ✅ (streaming SHA-256, 64 KiB chunks, 500 MB per-file cap; walker reuses the audio extension filter, 5000-file scan cap, oversize-as-warning policy, deterministic group ordering). Milestone **A3 — Autonomous** reached. |
 | **4 — Harmonisation** | ⏳ Not started | — | Directory-as-source-of-truth workflow: divergence inventory (path-vs-tag), agent-owned manifests for resumable runs. |
 
 ### Decisions to make before starting
@@ -304,14 +304,15 @@ Per-tool `dry_run` flags are great for one call. They don't let the agent say "h
 ```
 
 **Tasks**:
-- [ ] Internally: `Recording::search()` (already used by `mb_recording_search`) with the title + duration filter.
-- [ ] Score candidates: exact title match > prefix match; ±2s duration > ±10s; matching artist > unspecified artist.
-- [ ] Return only candidates above a confidence floor (default 0.6); below that, the agent should keep using fingerprinting.
-- [ ] Shares the cache + throttle from [2.3](#23-musicbrainz-response-cache--throttle).
+- [x] Internally: `Recording::search()` with the Lucene query builder (`recording`, optional `artist`, optional `release`). Duration stays out of the query (MB's `dur:` filter is exact-ms with no fuzz; tolerance lives in scoring instead).
+- [x] Score candidates: title (exact 1.0 / prefix 0.85 / substring 0.7 / 0); artist same matcher with neutral 0.5 when unspecified; duration ±2s = 1.0, ±5s = 0.85, ±10s = 0.6, ±30s = 0.3, beyond = 0. Album is NOT scored (search results lack release lists; query-side `release:` filter is enough).
+- [x] Combined confidence = `0.5·title + 0.3·artist + 0.2·duration`. Title-only query caps at 0.75 (above the default floor); title+artist hits 0.9; full triple hits 1.0.
+- [x] Return only candidates above `confidence_floor` (default 0.6), sorted desc, capped at `limit` (default 5, max 25).
+- [x] Shares the cache + throttle via the existing `MbBlockingTool` trait — no per-tool wiring needed.
 
-**Acceptance**: ignored network integration test exercising a famous title (returns the right MBID with confidence > 0.85). Unit tests on the scoring function.
+**Acceptance**: 12 unit tests covering normalization (incl. `AC/DC` → `ac dc`, apostrophe elision), each scoring component, combined confidence for the perfect / title-only / prefix-only cases, params default parsing, and limit clamping. 1 `#[ignore]`'d network integration test (`live_query_returns_correct_mbid_with_high_confidence`) exercising AC/DC — Hells Bells with title + artist + 312s duration + album, asserting top confidence > 0.85 and the right recording title. ✅
 
-**Effort**: 1 day.
+**Effort**: 1 day. **Status: done (2026-05-20).**
 
 ---
 
@@ -335,13 +336,15 @@ Common library-cleanup task: identify duplicate audio files (by exact byte hash,
 ```
 
 **Tasks**:
-- [ ] `fs_hash`: read in 64 KiB chunks (sha256 is streaming), cap at a sane file size (`MAX_HASH_BYTES = 500 MB` — beyond that the user should pass `--force`, deferred to flag).
-- [ ] `find_duplicates`: scan + hash, group, return only groups with len > 1.
-- [ ] Skip files where `fs_hash` errored (e.g. permission denied) and surface them in a `warnings` array.
+- [x] `fs_hash`: streams the file through `sha2::Sha256` in 64 KiB chunks via a `BufReader`. Hard-capped at `MAX_HASH_BYTES = 500 MB` (deferred a `--force` flag — caller errors out cleanly today). Catches a TOCTOU race where the file grew past the cap between `metadata()` and the streaming read.
+- [x] `find_duplicates`: scans the tree with `WalkDir` (mirrors `fs_scan_audio`'s deterministic pre-order + per-directory sort), filters by extension (default = lofty audio set), hashes each file via the shared `stream_sha256` helper, groups by SHA-256, returns only groups with ≥2 paths. Output sorted by paths count desc then by hash, with paths inside each group sorted lex.
+- [x] Skip-and-warn policy: walk errors, per-entry validation rejects (symlink policy, root containment), `metadata()` failures, oversize files, and per-file hash errors all surface as `warnings` strings without aborting the call.
+- [x] Hard caps: `max_depth = 16`, `max_files = 5000`. `truncated=true` signals the cap was hit (no resume cursor — splitting a duplicate group across pages would be confusing; narrow the root instead).
+- [x] `skip_oversize_silently` flag lets a caller running over a mixed library suppress the per-file oversize warnings.
 
-**Acceptance**: integration test with a tempdir containing 3 identical-bytes files and 2 different ones — assert one group with the 3 paths.
+**Acceptance**: 7 `fs_hash` unit tests (NIST FIPS 180-4 "abc" digest + known empty-string digest + multi-chunk identical-bytes equality + one-byte-difference + directory/outside-root/nonexistent refusals). 7 `find_duplicates` unit tests, including the roadmap scenario (3 identical + 2 distinct → 1 group of 3), no-duplicates baseline, extension filter, cross-subdirectory discovery, root-outside-config refusal, truncation when `max_files` is short, and ranking by descending group size. ✅
 
-**Effort**: 1 day.
+**Effort**: 1 day. **Status: done (2026-05-20). Milestone A3 — Autonomous reached.**
 
 ---
 
