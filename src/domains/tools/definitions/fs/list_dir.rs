@@ -425,8 +425,12 @@ impl FsListDirTool {
 
     /// Create a Tool model for this tool (metadata).
     pub fn to_tool() -> Tool {
-        Tool::new(Self::NAME, Self::DESCRIPTION, schema_for_type::<FSListDirParams>())
-            .with_raw_output_schema(schema_for_type::<ListResult>())
+        Tool::new(
+            Self::NAME,
+            Self::DESCRIPTION,
+            schema_for_type::<FSListDirParams>(),
+        )
+        .with_raw_output_schema(schema_for_type::<ListResult>())
     }
 
     /// Create a ToolRoute for STDIO/TCP transport.

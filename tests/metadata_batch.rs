@@ -87,7 +87,10 @@ fn batch_write_then_read_with_one_missing() {
         stop_on_error: false,
     };
     let r = WriteMetadataBatchTool::execute(&batch, &cfg);
-    assert!(!r.is_error.unwrap_or(false), "batch call must succeed even with per-item failures");
+    assert!(
+        !r.is_error.unwrap_or(false),
+        "batch call must succeed even with per-item failures"
+    );
 
     let s = r.structured_content.expect("structured output");
     let results = s["results"].as_array().unwrap();
@@ -137,7 +140,10 @@ fn batch_write_then_read_with_one_missing() {
     for (i, entry) in results.iter().enumerate() {
         assert!(entry["error"].is_null());
         let meta = &entry["metadata"]["metadata"];
-        assert_eq!(meta["title"].as_str(), Some(format!("Title {}", i + 1)).as_deref());
+        assert_eq!(
+            meta["title"].as_str(),
+            Some(format!("Title {}", i + 1)).as_deref()
+        );
         assert_eq!(meta["artist"].as_str(), Some("Batch Artist"));
         assert_eq!(meta["album"].as_str(), Some("Batch Album"));
         assert_eq!(meta["year"].as_u64(), Some(2026));

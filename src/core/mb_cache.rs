@@ -36,9 +36,8 @@ impl MbCache {
             && let Some(parent) = path.parent()
             && !parent.as_os_str().is_empty()
         {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                format!("Failed to create cache directory {:?}: {}", parent, e)
-            })?;
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create cache directory {:?}: {}", parent, e))?;
         }
 
         let conn = if path == Path::new(":memory:") {
@@ -140,9 +139,11 @@ impl MbCache {
             Ok(g) => g,
             Err(_) => return 0,
         };
-        conn.query_row("SELECT COUNT(*) FROM mb_cache", [], |row| row.get::<_, i64>(0))
-            .map(|n| n as usize)
-            .unwrap_or(0)
+        conn.query_row("SELECT COUNT(*) FROM mb_cache", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .map(|n| n as usize)
+        .unwrap_or(0)
     }
 
     /// `true` when the cache table holds no rows. Convenience companion to
@@ -214,7 +215,10 @@ pub fn instance() -> Option<&'static MbCache> {
                     Some(cache)
                 }
                 Err(e) => {
-                    warn!("Failed to open mb_cache at {:?}: {}; running without cache", path, e);
+                    warn!(
+                        "Failed to open mb_cache at {:?}: {}; running without cache",
+                        path, e
+                    );
                     None
                 }
             }
@@ -243,7 +247,11 @@ mod tests {
         assert!(cache.get("nope").is_none());
 
         cache
-            .put("artist:radiohead", r#"{"mbid":"abc"}"#, Duration::from_secs(60))
+            .put(
+                "artist:radiohead",
+                r#"{"mbid":"abc"}"#,
+                Duration::from_secs(60),
+            )
             .unwrap();
         assert_eq!(
             cache.get("artist:radiohead").as_deref(),
@@ -257,7 +265,10 @@ mod tests {
         // TTL of 0 → expires immediately on the next call (now + 0 == now,
         // and the predicate is strict `>`).
         cache.put("k", "v", Duration::from_secs(0)).unwrap();
-        assert!(cache.get("k").is_none(), "expired entry must not be returned");
+        assert!(
+            cache.get("k").is_none(),
+            "expired entry must not be returned"
+        );
         // After the read, the row is gone.
         assert_eq!(cache.len(), 0);
     }

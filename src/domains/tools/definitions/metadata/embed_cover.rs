@@ -312,14 +312,10 @@ impl EmbedCoverTool {
     /// Resolve image bytes from whichever source the caller supplied.
     /// Enforces the "exactly one" constraint and applies the size cap to
     /// the *decoded* bytes (the base64 string may legitimately be larger).
-    fn resolve_image_bytes(
-        params: &EmbedCoverParams,
-        config: &Config,
-    ) -> Result<Vec<u8>, String> {
+    fn resolve_image_bytes(params: &EmbedCoverParams, config: &Config) -> Result<Vec<u8>, String> {
         match (&params.image_path, &params.image_bytes_base64) {
             (Some(_), Some(_)) => Err(
-                "Provide exactly one of 'image_path' or 'image_bytes_base64', not both"
-                    .to_string(),
+                "Provide exactly one of 'image_path' or 'image_bytes_base64', not both".to_string(),
             ),
             (None, None) => Err(
                 "Missing image source: provide 'image_path' or 'image_bytes_base64'".to_string(),
@@ -340,8 +336,7 @@ impl EmbedCoverTool {
                         MAX_EMBEDDED_COVER_BYTES
                     ));
                 }
-                std::fs::read(&resolved)
-                    .map_err(|e| format!("Failed to read image file: {}", e))
+                std::fs::read(&resolved).map_err(|e| format!("Failed to read image file: {}", e))
             }
             (None, Some(b64)) => base64::engine::general_purpose::STANDARD
                 .decode(b64.as_bytes())
@@ -526,7 +521,10 @@ mod tests {
 
     #[test]
     fn picture_type_str_undefined() {
-        assert_eq!(picture_type_str(&PictureType::Undefined(42)), "Undefined(42)");
+        assert_eq!(
+            picture_type_str(&PictureType::Undefined(42)),
+            "Undefined(42)"
+        );
     }
 
     #[test]

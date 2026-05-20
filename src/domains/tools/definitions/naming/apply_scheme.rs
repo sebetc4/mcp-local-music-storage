@@ -235,9 +235,7 @@ fn parse_template(template: &str) -> Result<Vec<Segment>, String> {
                 segments.push(parse_placeholder(&body)?);
             }
             '}' => {
-                return Err(
-                    "Unexpected '}' — no matching '{' before this position".to_string()
-                );
+                return Err("Unexpected '}' — no matching '{' before this position".to_string());
             }
             _ => literal.push(c),
         }
@@ -326,12 +324,9 @@ fn parse_format_spec(spec: &str, field: &str) -> Result<FormatSpec, String> {
             spec, field
         ));
     }
-    let width: usize = digits_part.parse().map_err(|_| {
-        format!(
-            "Invalid width in format ':{}' for field '{}'",
-            spec, field
-        )
-    })?;
+    let width: usize = digits_part
+        .parse()
+        .map_err(|_| format!("Invalid width in format ':{}' for field '{}'", spec, field))?;
     if width == 0 {
         return Err(format!(
             "Width must be >= 1 in format ':{}' for field '{}'",
@@ -378,9 +373,7 @@ fn render_segment(
                     let n = value_as_i64(value).ok_or_else(|| {
                         format!(
                             "Field '{}' has format ':0{}d' but its value is not an integer: {}",
-                            name,
-                            width,
-                            value
+                            name, width, value
                         )
                     })?;
                     if n < 0 {
@@ -406,13 +399,8 @@ fn render_segment(
 }
 
 fn lookup_non_empty<'a>(map: &'a Map<String, Value>, key: &str) -> Option<&'a Value> {
-    map.get(key).and_then(|v| {
-        if is_empty_value(v) {
-            None
-        } else {
-            Some(v)
-        }
-    })
+    map.get(key)
+        .and_then(|v| if is_empty_value(v) { None } else { Some(v) })
 }
 
 fn is_empty_value(v: &Value) -> bool {
@@ -467,7 +455,10 @@ fn validate_relative_path(path: &str) -> Result<(), String> {
     }
     for component in std::path::Path::new(path).components() {
         if matches!(component, std::path::Component::ParentDir) {
-            return Err(format!("Resolved path '{}' contains a '..' component", path));
+            return Err(format!(
+                "Resolved path '{}' contains a '..' component",
+                path
+            ));
         }
     }
     Ok(())
@@ -489,7 +480,10 @@ mod tests {
     fn run(template: &str, metadata: Value, sanitise: bool) -> Result<String, String> {
         let params = ApplyNamingSchemeParams {
             template: template.to_string(),
-            metadata: metadata.as_object().expect("metadata must be an object").clone(),
+            metadata: metadata
+                .as_object()
+                .expect("metadata must be an object")
+                .clone(),
             sanitise,
         };
         let result = ApplyNamingSchemeTool::execute(&params, &cfg());
@@ -553,12 +547,7 @@ mod tests {
 
     #[test]
     fn missing_required_field_errors() {
-        let err = run(
-            "{artist}/{album}",
-            json!({"album": "Without Artist"}),
-            true,
-        )
-        .unwrap_err();
+        let err = run("{artist}/{album}", json!({"album": "Without Artist"}), true).unwrap_err();
         assert!(err.contains("'artist'"), "got error: {}", err);
     }
 
@@ -586,12 +575,7 @@ mod tests {
 
     #[test]
     fn format_spec_zero_pads_integer() {
-        let out = run(
-            "{track:02d}",
-            json!({"track": 7}),
-            true,
-        )
-        .unwrap();
+        let out = run("{track:02d}", json!({"track": 7}), true).unwrap();
         assert_eq!(out, "07");
 
         let out = run("{track:04d}", json!({"track": 7}), true).unwrap();
@@ -658,23 +642,13 @@ mod tests {
 
     #[test]
     fn control_characters_are_replaced() {
-        let out = run(
-            "{title}",
-            json!({"title": "line1\nline2\tend"}),
-            true,
-        )
-        .unwrap();
+        let out = run("{title}", json!({"title": "line1\nline2\tend"}), true).unwrap();
         assert_eq!(out, "line1-line2-end");
     }
 
     #[test]
     fn trailing_dots_and_whitespace_are_trimmed() {
-        let out = run(
-            "{album}",
-            json!({"album": "  Album Name...  "}),
-            true,
-        )
-        .unwrap();
+        let out = run("{album}", json!({"album": "  Album Name...  "}), true).unwrap();
         assert_eq!(out, "Album Name");
     }
 

@@ -24,9 +24,7 @@ use tracing::{info, instrument};
 
 use crate::core::config::Config;
 use crate::domains::tools::definitions::metadata::read_batch::MAX_BATCH;
-use crate::domains::tools::definitions::metadata::write::{
-    WriteMetadataParams, WriteMetadataTool,
-};
+use crate::domains::tools::definitions::metadata::write::{WriteMetadataParams, WriteMetadataTool};
 
 // ============================================================================
 // Tool Parameters
@@ -92,8 +90,7 @@ pub struct WriteMetadataBatchTool;
 impl WriteMetadataBatchTool {
     pub const NAME: &'static str = "write_metadata_batch";
 
-    pub const DESCRIPTION: &'static str =
-        "Write or update tags across many audio files in a single MCP call. Each entry uses \
+    pub const DESCRIPTION: &'static str = "Write or update tags across many audio files in a single MCP call. Each entry uses \
          the same shape as write_metadata; per-item failures land in entry.error without \
          aborting the batch. Set stop_on_error=true to halt at the first failure (no \
          rollback of earlier writes). Hard-capped at 500 files per call.";

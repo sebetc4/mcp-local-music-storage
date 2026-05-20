@@ -215,8 +215,12 @@ impl FsDeleteTool {
 
     /// Create a Tool model for this tool (metadata).
     pub fn to_tool() -> Tool {
-        Tool::new(Self::NAME, Self::DESCRIPTION, schema_for_type::<FsDeleteParams>())
-            .with_raw_output_schema(schema_for_type::<DeleteResult>())
+        Tool::new(
+            Self::NAME,
+            Self::DESCRIPTION,
+            schema_for_type::<FsDeleteParams>(),
+        )
+        .with_raw_output_schema(schema_for_type::<DeleteResult>())
     }
 
     /// Create a ToolRoute for STDIO/TCP transport.

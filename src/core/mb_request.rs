@@ -47,11 +47,7 @@ struct CachedResponse {
 /// * `fetch_fn` — the actual network call. Only invoked on cache miss.
 ///   Errors (`CallToolResult::is_error = true`) are returned to the caller
 ///   but never cached.
-pub fn cached_or_fetch_blocking<F>(
-    cache_key: &str,
-    ttl: Duration,
-    fetch_fn: F,
-) -> CallToolResult
+pub fn cached_or_fetch_blocking<F>(cache_key: &str, ttl: Duration, fetch_fn: F) -> CallToolResult
 where
     F: FnOnce() -> CallToolResult,
 {
@@ -75,7 +71,10 @@ where
         && let Some(summary) = first_text(&result.content)
         && let Some(cache) = mb_cache::instance()
     {
-        let payload = CachedResponse { summary, structured };
+        let payload = CachedResponse {
+            summary,
+            structured,
+        };
         match serde_json::to_string(&payload) {
             Ok(json) => {
                 if let Err(e) = cache.put(cache_key, &json, ttl) {
@@ -143,7 +142,10 @@ mod tests {
             && let Some(structured) = result.structured_content.clone()
             && let Some(summary) = first_text(&result.content)
         {
-            let payload = CachedResponse { summary, structured };
+            let payload = CachedResponse {
+                summary,
+                structured,
+            };
             if let Ok(json) = serde_json::to_string(&payload) {
                 let _ = cache.put(key, &json, Duration::from_secs(60));
             }

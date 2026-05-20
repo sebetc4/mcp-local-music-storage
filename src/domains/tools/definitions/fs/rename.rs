@@ -246,8 +246,12 @@ impl FsRenameTool {
 
     /// Create a Tool model for this tool (metadata).
     pub fn to_tool() -> Tool {
-        Tool::new(Self::NAME, Self::DESCRIPTION, schema_for_type::<FsRenameParams>())
-            .with_raw_output_schema(schema_for_type::<RenameResult>())
+        Tool::new(
+            Self::NAME,
+            Self::DESCRIPTION,
+            schema_for_type::<FsRenameParams>(),
+        )
+        .with_raw_output_schema(schema_for_type::<RenameResult>())
     }
 
     /// Create a ToolRoute for STDIO/TCP transport.

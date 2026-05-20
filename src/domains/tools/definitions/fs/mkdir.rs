@@ -212,8 +212,12 @@ impl FsMkdirTool {
     }
 
     pub fn to_tool() -> Tool {
-        Tool::new(Self::NAME, Self::DESCRIPTION, schema_for_type::<FsMkdirParams>())
-            .with_raw_output_schema(schema_for_type::<MkdirResult>())
+        Tool::new(
+            Self::NAME,
+            Self::DESCRIPTION,
+            schema_for_type::<FsMkdirParams>(),
+        )
+        .with_raw_output_schema(schema_for_type::<MkdirResult>())
     }
 
     pub fn create_route<S>(config: Arc<Config>) -> ToolRoute<S>
@@ -224,9 +228,8 @@ impl FsMkdirTool {
             let args = ctx.arguments.clone().unwrap_or_default();
             let config = config.clone();
             async move {
-                let params: FsMkdirParams =
-                    serde_json::from_value(serde_json::Value::Object(args))
-                        .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+                let params: FsMkdirParams = serde_json::from_value(serde_json::Value::Object(args))
+                    .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
                 Ok(Self::execute(&params, &config))
             }
             .boxed()
@@ -409,12 +412,7 @@ mod tests {
         let root = TempDir::new().unwrap();
         let cfg = config_rooted_at(root.path());
 
-        let traversal = root
-            .path()
-            .join("foo")
-            .join("..")
-            .join("..")
-            .join("escape");
+        let traversal = root.path().join("foo").join("..").join("..").join("escape");
         let r = FsMkdirTool::execute(
             &FsMkdirParams {
                 path: traversal.to_string_lossy().into_owned(),

@@ -7,6 +7,7 @@ pub mod fs;
 pub mod mb;
 pub mod metadata;
 pub mod naming;
+pub mod plan;
 
 pub use fs::{FsDeleteTool, FsListDirTool, FsMkdirTool, FsMoveTool, FsRenameTool, FsScanAudioTool};
 pub use mb::{
@@ -19,6 +20,7 @@ pub use metadata::{
     WriteMetadataTool,
 };
 pub use naming::ApplyNamingSchemeTool;
+pub use plan::ApplyPlanTool;
 
 /// X-macro listing every tool the server exposes. Editing this list is the
 /// **single source of truth**: `tool_names`, `get_all_tools`, `call_tool`
@@ -74,6 +76,10 @@ macro_rules! foreach_tool {
         );
         $visit!(
             $crate::domains::tools::definitions::ApplyNamingSchemeTool,
+            with_config
+        );
+        $visit!(
+            $crate::domains::tools::definitions::ApplyPlanTool,
             with_config
         );
         $visit!(

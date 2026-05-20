@@ -164,10 +164,7 @@ impl FsMoveTool {
         let parent_for_dest = match to.parent() {
             Some(p) => p.to_path_buf(),
             None => {
-                warn!(
-                    "Destination has no parent directory: {}",
-                    to.display()
-                );
+                warn!("Destination has no parent directory: {}", to.display());
                 return CallToolResult::error(vec![Content::text(format!(
                     "Destination has no parent directory: {}",
                     to.display()
@@ -312,8 +309,12 @@ impl FsMoveTool {
     }
 
     pub fn to_tool() -> Tool {
-        Tool::new(Self::NAME, Self::DESCRIPTION, schema_for_type::<FsMoveParams>())
-            .with_raw_output_schema(schema_for_type::<MoveResult>())
+        Tool::new(
+            Self::NAME,
+            Self::DESCRIPTION,
+            schema_for_type::<FsMoveParams>(),
+        )
+        .with_raw_output_schema(schema_for_type::<MoveResult>())
     }
 
     pub fn create_route<S>(config: Arc<Config>) -> ToolRoute<S>
@@ -324,9 +325,8 @@ impl FsMoveTool {
             let args = ctx.arguments.clone().unwrap_or_default();
             let config = config.clone();
             async move {
-                let params: FsMoveParams =
-                    serde_json::from_value(serde_json::Value::Object(args))
-                        .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+                let params: FsMoveParams = serde_json::from_value(serde_json::Value::Object(args))
+                    .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
                 Ok(Self::execute(&params, &config))
             }
             .boxed()

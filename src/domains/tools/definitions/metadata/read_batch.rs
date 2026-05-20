@@ -88,8 +88,7 @@ pub struct ReadMetadataBatchTool;
 impl ReadMetadataBatchTool {
     pub const NAME: &'static str = "read_metadata_batch";
 
-    pub const DESCRIPTION: &'static str =
-        "Read metadata from many audio files in a single MCP call. \
+    pub const DESCRIPTION: &'static str = "Read metadata from many audio files in a single MCP call. \
          Returns per-item results; each item carries its own error field so a single \
          bad file doesn't fail the whole batch. Hard-capped at 500 files per call — \
          paginate above that. Uniform include_properties applied to every entry.";
@@ -233,7 +232,9 @@ mod tests {
 
     #[test]
     fn rejects_batches_above_the_hard_cap() {
-        let paths: Vec<String> = (0..MAX_BATCH + 1).map(|i| format!("/tmp/x{}.mp3", i)).collect();
+        let paths: Vec<String> = (0..MAX_BATCH + 1)
+            .map(|i| format!("/tmp/x{}.mp3", i))
+            .collect();
         let p = ReadMetadataBatchParams {
             paths,
             include_properties: false,
@@ -259,10 +260,7 @@ mod tests {
     #[test]
     fn missing_files_land_as_per_item_errors() {
         let p = ReadMetadataBatchParams {
-            paths: vec![
-                "/nonexistent/a.mp3".into(),
-                "/nonexistent/b.mp3".into(),
-            ],
+            paths: vec!["/nonexistent/a.mp3".into(), "/nonexistent/b.mp3".into()],
             include_properties: false,
         };
         let r = ReadMetadataBatchTool::execute(&p, &test_config());

@@ -20,7 +20,7 @@ Today the chain breaks at *embed cover*, *organise*, and *scale*. The phases bel
 |---|---|---|---|
 | **1 — Workflow Completion** | ✅ Done | 2026-05-19 | 1.1 `embed_cover` ✅, 1.2 `fs_mkdir` + `fs_move` (+ `validate_unborn_path` helper) ✅, 1.3 `apply_naming_scheme` ✅ (pure templating with sanitisation, fallback chains, `:0Nd` format, refuses absolute paths and `..`). Milestone **A1 — End-to-end** reached. |
 | **2 — Scale & Performance** | ✅ Done | 2026-05-20 | 2.1 `fs_scan_audio` ✅, 2.2 `read_metadata_batch` + `write_metadata_batch` ✅, 2.3 MB cache (sqlite, 24h/7d TTL, lazy purge) + throttle (1100ms slots, sync+async) ✅ wired through `MbBlockingTool::execute_cached`. Milestone **A2 — At scale** reached. |
-| **3 — Safety & Quality** | ⏳ Not started | — | Multi-operation plan/apply, tag-based MB identification fallback, hash + duplicate detection. |
+| **3 — Safety & Quality** | 🚧 In progress | 2026-05-20 | 3.1 `apply_plan` ✅ (mkdir/move/write_metadata/embed_cover ops; native `dry_run` propagation + validation-only stubs for tag-writing ops; 1000-op cap; documented no-rollback policy with `executed`/`skipped`/`stopped_early` counters). 3.2 + 3.3 not started. |
 | **4 — Harmonisation** | ⏳ Not started | — | Directory-as-source-of-truth workflow: divergence inventory (path-vs-tag), agent-owned manifests for resumable runs. |
 
 ### Decisions to make before starting
@@ -273,15 +273,16 @@ Per-tool `dry_run` flags are great for one call. They don't let the agent say "h
 ```
 
 **Tasks**:
-- [ ] Define a small `Operation` enum mirroring the tools' params.
-- [ ] `dry_run=true`: each op's tool runs its own validation step (path checks, MBID parse, etc.) without touching state, results are aggregated. No rollback needed because nothing committed.
-- [ ] `dry_run=false`, `stop_on_error=true`: first failure stops the loop. Already-committed ops are NOT rolled back (filesystem rollback is unsafe in general); they're reported as `status: "ok"` and the user/agent decides next steps.
-- [ ] `dry_run=false`, `stop_on_error=false`: best-effort, every op runs, individual failures land in the per-op status.
-- [ ] Clear doc-comment explaining the explicit non-rollback policy (with rationale: a partial rename + a successful tag-write isn't reversible without remembering the original tags, which is more state than a tool should hold).
+- [x] Define a small `Operation` enum mirroring the tools' params. Internally-tagged on `"op"` (snake_case), with newtype variants wrapping `FsMkdirParams` / `FsMoveParams` / `WriteMetadataParams` / `EmbedCoverParams` — zero schema duplication.
+- [x] `dry_run=true`: mkdir/move propagate their native `dry_run` (ORed with per-op authoring); write_metadata + embed_cover get validation-only stubs (`validate_path` + `is_file` + arity for embed_cover's image source) without touching tags. Per-op `dry_run=true` under a committing plan is also honoured.
+- [x] `dry_run=false`, `stop_on_error=true`: first failure stops the loop. Already-committed ops are NOT rolled back (filesystem rollback is unsafe in general); they're reported as `status: "ok"` and the user/agent decides next steps.
+- [x] `dry_run=false`, `stop_on_error=false`: best-effort, every op runs, individual failures land in the per-op status.
+- [x] Clear doc-comment explaining the explicit non-rollback policy (with rationale: a partial rename + a successful tag-write isn't reversible without remembering the original tags, which is more state than a tool should hold).
+- [x] Hard cap `MAX_OPERATIONS = 1000` (heterogeneous plans average 3-4 ops per file → ≈250 files per call).
 
-**Acceptance**: integration test for each (dry_run, stop_on_error) quadrant. The `dry_run=true` case should validate a deliberately-broken plan (bad path) and report the failure WITHOUT creating anything on disk.
+**Acceptance**: 9 unit tests covering hard cap, empty plan, plan-level dry_run forcing into validation, validation-only stub for write_metadata, embed_cover arity validation, stop_on_error halt + skip accounting, best-effort continuation, per-op dry_run respected under committing plan, and the JSON wire format with the `op` discriminator. 3 integration tests in `tests/apply_plan.rs`: full mkdir→write_metadata→embed_cover→move pipeline in one call (assert tags + embedded PNG land on the destination); full dry-run on the same pipeline (assert zero filesystem mutation); `stop_on_error` with a sabotaged embed_cover (assert mkdir + write_metadata stay committed, move never runs). ✅
 
-**Effort**: 1.5 days.
+**Effort**: 1.5 days. **Status: done (2026-05-20).**
 
 ---
 

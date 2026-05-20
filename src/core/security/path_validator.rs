@@ -163,12 +163,13 @@ pub fn validate_unborn_path(
     let canonical_ancestor = validate_path(&ancestor.to_string_lossy(), config)?;
 
     // 5. Stitch the not-yet-existing suffix onto the canonical ancestor.
-    let suffix = cleaned
-        .strip_prefix(ancestor)
-        .map_err(|_| PathSecurityError::OutsideRootDirectory {
-            path: cleaned.clone(),
-            root: ancestor.to_path_buf(),
-        })?;
+    let suffix =
+        cleaned
+            .strip_prefix(ancestor)
+            .map_err(|_| PathSecurityError::OutsideRootDirectory {
+                path: cleaned.clone(),
+                root: ancestor.to_path_buf(),
+            })?;
 
     // Short-circuit: the input path already exists (suffix is empty). Joining
     // an empty path onto `canonical_ancestor` would tack on a trailing
