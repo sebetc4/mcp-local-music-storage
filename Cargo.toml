@@ -64,19 +64,19 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 # Metadata
 lofty = "0.24.0"
 musicbrainz_rs = { version = "0.13.0", default-features = false, features = ["sync", "rustls"] }
-reqwest = { version = "0.12.26", features = ["blocking", "json", "rustls-tls"], default-features = false }
+reqwest = { version = "0.13.3", features = ["blocking", "json", "form", "rustls"], default-features = false }
 
 # Utilities
 async-trait = "0.1"
 base64 = "0.22"
 dotenvy = "0.15.7"
 chrono = { version = "0.4.44", features = ["serde"] }
-schemars = "1"
+schemars = "1.2.1"
 
 [dev-dependencies]
 tokio-test = "0.4.5"
 
-tempfile = "3.8"
+tempfile = "3.27.0"
 
 [profile.release]
 lto = true
