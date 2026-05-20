@@ -43,7 +43,7 @@ mod tests {
     fn test_build_router() {
         let router: ToolRouter<TestServer> = build_tool_router(test_config());
         let tools = router.list_all();
-        assert_eq!(tools.len(), 16);
+        assert_eq!(tools.len(), 17);
 
         let names: Vec<_> = tools.iter().map(|t| t.name.as_ref()).collect();
         assert!(names.contains(&"apply_naming_scheme"));
@@ -52,6 +52,7 @@ mod tests {
         assert!(names.contains(&"fs_list_dir"));
         assert!(names.contains(&"fs_mkdir"));
         assert!(names.contains(&"fs_move"));
+        assert!(names.contains(&"fs_scan_audio"));
         assert!(names.contains(&"mb_artist_search"));
         assert!(names.contains(&"mb_cover_download"));
         assert!(names.contains(&"mb_release_search"));

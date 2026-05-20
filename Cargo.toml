@@ -72,6 +72,7 @@ base64 = "0.22"
 dotenvy = "0.15.7"
 chrono = { version = "0.4.44", features = ["serde"] }
 schemars = "1.2.1"
+walkdir = "2.5"
 
 [dev-dependencies]
 tokio-test = "0.4.5"

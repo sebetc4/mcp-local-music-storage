@@ -66,7 +66,7 @@ async fn initialize_returns_server_info_and_capabilities() {
 }
 
 #[tokio::test]
-async fn tools_list_returns_all_sixteen_tools() {
+async fn tools_list_returns_all_seventeen_tools() {
     let req = json!({
         "jsonrpc": "2.0",
         "id": 2,
@@ -78,8 +78,8 @@ async fn tools_list_returns_all_sixteen_tools() {
     let tools = resp["result"]["tools"].as_array().expect("tools array");
     assert_eq!(
         tools.len(),
-        16,
-        "expected 16 tools (the `foreach_tool!` inventory), got {}",
+        17,
+        "expected 17 tools (the `foreach_tool!` inventory), got {}",
         tools.len()
     );
 
@@ -92,6 +92,7 @@ async fn tools_list_returns_all_sixteen_tools() {
         "fs_mkdir",
         "fs_move",
         "fs_rename",
+        "fs_scan_audio",
         "mb_artist_search",
         "mb_cover_download",
         "mb_identify_record",

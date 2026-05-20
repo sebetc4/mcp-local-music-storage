@@ -19,7 +19,7 @@ Today the chain breaks at *embed cover*, *organise*, and *scale*. The phases bel
 | Phase | Status | Date | Notes |
 |---|---|---|---|
 | **1 — Workflow Completion** | ✅ Done | 2026-05-19 | 1.1 `embed_cover` ✅, 1.2 `fs_mkdir` + `fs_move` (+ `validate_unborn_path` helper) ✅, 1.3 `apply_naming_scheme` ✅ (pure templating with sanitisation, fallback chains, `:0Nd` format, refuses absolute paths and `..`). Milestone **A1 — End-to-end** reached. |
-| **2 — Scale & Performance** | ⏳ Not started | — | Recursive audio scan, batch metadata I/O, MusicBrainz cache + throttle. |
+| **2 — Scale & Performance** | 🔄 In progress | 2026-05-20 | 2.1 `fs_scan_audio` ✅ (walkdir + lex-sorted DFS, opaque cursor pagination, hard caps 16 depth / 5000 results, symlinks surfaced as warnings). 2.2 batch metadata + 2.3 MB cache/throttle remaining. |
 | **3 — Safety & Quality** | ⏳ Not started | — | Multi-operation plan/apply, tag-based MB identification fallback, hash + duplicate detection. |
 | **4 — Harmonisation** | ⏳ Not started | — | Directory-as-source-of-truth workflow: divergence inventory (path-vs-tag), agent-owned manifests for resumable runs. |
 
@@ -177,14 +177,15 @@ The agent currently has to assemble target paths by string concatenation. That's
 ```
 
 **Tasks**:
-- [ ] Use `walkdir` (already a transitive dep via lofty/tempfile, or add explicitly).
-- [ ] Apply `validate_path` to every yielded entry (rejects symlinks per existing policy).
-- [ ] Cursor = opaque base64-encoded `(last_path, scanned_count)`; resumable across calls so the agent doesn't OOM on huge libraries.
-- [ ] `is_safe_filename` already handles per-component validation; skip entries that fail it with a structured warning rather than aborting.
+- [x] Use `walkdir` (now an explicit dep — it was transitive via tempfile but pinning it ourselves keeps it stable).
+- [x] Apply `validate_path` to every emitted entry; strict-symlink policy rejects symlinks as a per-entry warning instead of aborting the walk.
+- [x] Cursor = base64-encoded `(last_path, scanned_count)`; resumable across calls. Lex-comparison on the sorted DFS order means a single `<= last_path` check skips exactly the already-emitted prefix.
+- [x] Hidden directories pruned via `WalkDir::filter_entry` (cheap — we don't descend) unless `include_hidden=true`.
+- [x] Truncation flag is only set when a subsequent eligible entry exists past the cap, so the agent never gets a spurious cursor that resolves to 0 files.
 
-**Acceptance**: integration test on a tempdir with 100 nested audio files + 100 non-audio + 1 symlink, asserts: only audio returned, symlink rejected by warning, two-call pagination with `max_results=50` yields all 100 across two calls.
+**Acceptance**: integration test on a tempdir with 100 nested audio files + 100 non-audio + 1 symlink, asserts: only audio returned, symlink rejected by warning, two-call pagination with `max_results=50` yields all 100 across two calls. ✅ 11 unit tests + 2 integration tests in `tests/fs_scan_audio.rs`.
 
-**Effort**: 0.5 day.
+**Effort**: 0.5 day. **Status: done (2026-05-20).**
 
 ---
 

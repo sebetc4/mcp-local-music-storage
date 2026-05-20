@@ -8,7 +8,7 @@ pub mod mb;
 pub mod metadata;
 pub mod naming;
 
-pub use fs::{FsDeleteTool, FsListDirTool, FsMkdirTool, FsMoveTool, FsRenameTool};
+pub use fs::{FsDeleteTool, FsListDirTool, FsMkdirTool, FsMoveTool, FsRenameTool, FsScanAudioTool};
 pub use mb::{
     MbArtistParams, MbArtistTool, MbCoverDownloadParams, MbCoverDownloadTool, MbIdentifyRecordTool,
     MbLabelParams, MbLabelTool, MbRecordingParams, MbRecordingTool, MbReleaseParams, MbReleaseTool,
@@ -44,8 +44,9 @@ macro_rules! foreach_tool {
             $crate::domains::tools::definitions::FsMkdirTool,
             with_config
         );
+        $visit!($crate::domains::tools::definitions::FsMoveTool, with_config);
         $visit!(
-            $crate::domains::tools::definitions::FsMoveTool,
+            $crate::domains::tools::definitions::FsScanAudioTool,
             with_config
         );
         $visit!(
