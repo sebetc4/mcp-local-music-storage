@@ -4,6 +4,7 @@
 //! Each tool is defined in its own file for better maintainability.
 
 pub mod fs;
+pub mod harmonisation;
 pub mod mb;
 pub mod metadata;
 pub mod naming;
@@ -13,10 +14,14 @@ pub use fs::{
     FindDuplicatesTool, FsDeleteTool, FsHashTool, FsListDirTool, FsMkdirTool, FsMoveTool,
     FsRenameTool, FsScanAudioTool,
 };
+pub use harmonisation::{
+    InventoryDivergencesTool, ManifestListTool, ManifestReadTool, ManifestWriteTool,
+};
 pub use mb::{
     MbArtistParams, MbArtistTool, MbCoverDownloadParams, MbCoverDownloadTool, MbIdentifyRecordTool,
     MbLabelParams, MbLabelTool, MbMatchFromTagsParams, MbMatchFromTagsTool, MbRecordingParams,
-    MbRecordingTool, MbReleaseParams, MbReleaseTool, MbWorkParams, MbWorkTool,
+    MbRecordingTool, MbRelationsParams, MbRelationsTool, MbReleaseParams, MbReleaseTool,
+    MbWorkParams, MbWorkTool,
 };
 pub use metadata::{
     EmbedCoverTool, ReadMetadataBatchTool, ReadMetadataTool, WriteMetadataBatchTool,
@@ -91,6 +96,22 @@ macro_rules! foreach_tool {
             with_config
         );
         $visit!(
+            $crate::domains::tools::definitions::InventoryDivergencesTool,
+            with_config
+        );
+        $visit!(
+            $crate::domains::tools::definitions::ManifestWriteTool,
+            with_config
+        );
+        $visit!(
+            $crate::domains::tools::definitions::ManifestReadTool,
+            with_config
+        );
+        $visit!(
+            $crate::domains::tools::definitions::ManifestListTool,
+            with_config
+        );
+        $visit!(
             $crate::domains::tools::definitions::MbCoverDownloadTool,
             with_config
         );
@@ -102,6 +123,10 @@ macro_rules! foreach_tool {
         $visit!($crate::domains::tools::definitions::MbLabelTool, no_config);
         $visit!(
             $crate::domains::tools::definitions::MbMatchFromTagsTool,
+            no_config
+        );
+        $visit!(
+            $crate::domains::tools::definitions::MbRelationsTool,
             no_config
         );
         $visit!(

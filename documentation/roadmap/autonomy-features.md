@@ -21,7 +21,7 @@ Today the chain breaks at *embed cover*, *organise*, and *scale*. The phases bel
 | **1 — Workflow Completion** | ✅ Done | 2026-05-19 | 1.1 `embed_cover` ✅, 1.2 `fs_mkdir` + `fs_move` (+ `validate_unborn_path` helper) ✅, 1.3 `apply_naming_scheme` ✅ (pure templating with sanitisation, fallback chains, `:0Nd` format, refuses absolute paths and `..`). Milestone **A1 — End-to-end** reached. |
 | **2 — Scale & Performance** | ✅ Done | 2026-05-20 | 2.1 `fs_scan_audio` ✅, 2.2 `read_metadata_batch` + `write_metadata_batch` ✅, 2.3 MB cache (sqlite, 24h/7d TTL, lazy purge) + throttle (1100ms slots, sync+async) ✅ wired through `MbBlockingTool::execute_cached`. Milestone **A2 — At scale** reached. |
 | **3 — Safety & Quality** | ✅ Done | 2026-05-20 | 3.1 `apply_plan` ✅ (mkdir/move/write_metadata/embed_cover ops; native `dry_run` propagation + validation-only stubs for tag-writing ops; 1000-op cap; documented no-rollback policy with `executed`/`skipped`/`stopped_early` counters). 3.2 `mb_match_from_tags` ✅ (RecordingMatch-compatible payload, 0.5/0.3/0.2 title/artist/duration weights, default 0.6 confidence floor, shares MB cache + throttle via `MbBlockingTool`). 3.3 `fs_hash` + `find_duplicates` ✅ (streaming SHA-256, 64 KiB chunks, 500 MB per-file cap; walker reuses the audio extension filter, 5000-file scan cap, oversize-as-warning policy, deterministic group ordering). Milestone **A3 — Autonomous** reached. |
-| **4 — Harmonisation** | ⏳ Not started | — | Directory-as-source-of-truth workflow: divergence inventory (path-vs-tag), agent-owned manifests for resumable runs. |
+| **4 — Harmonisation** | ✅ Done | 2026-05-21 | 4.1 `inventory_divergences` ✅ (reverse-direction template matcher with rfind-on-critical-literal for clean `{title}.{ext}` behavior; per-directory tag histograms + per-file divergences; case-insensitive by default; numeric-aware comparison for `:0Nd` fields; cursor pages between directories never within). 4.2 `manifest_write` / `manifest_read` / `manifest_list` ✅ (strict id allowlist, 10 MB cap, atomic via `fs_atomic`, `NotFound` returned as structured success on read miss, 100-entry listing cap; no `manifest_delete` by design). Milestone **A4 — Harmonised** reached. |
 
 ### Decisions to make before starting
 
@@ -438,27 +438,18 @@ The killer report tool. One call returns enough structured data for the agent to
 ```
 
 **Tasks**:
-- [ ] Parse `path_template` once into a sequence of literal segments + named captures. Reuse the parsing infra from [1.3](#13-path-templating) — same template DSL, reverse direction.
-- [ ] For each path under `root`: match the path components against the template. Unmatched files (the template doesn't fit) land in a `warnings` array with the path and the failure reason. Matching is exact-segment, no fuzzy.
-- [ ] Read tags via lofty (re-uses the same backend as `read_metadata`). On read error, the file lands in `warnings`, not in the per-directory data.
-- [ ] Group results by **leaf directory** (the album directory in the reference template). Build the `field_value_counts` histogram from the tag-stored values inside each group — this is the data the agent picks the canonical form from.
-- [ ] Compute `divergences` per file. Case sensitivity controlled by the `case_sensitive` flag; whitespace is always trimmed before comparison.
-- [ ] Pagination: cursor encodes `(last_directory_path, files_scanned)`. Resumable across calls.
-- [ ] Honour `MAX_BATCH = 5000` cap from [2.2](#22-batch-metadata-readwrite); above that, paginate.
-- [ ] Run on `tokio::task::spawn_blocking` with bounded concurrency (lofty parsing is CPU-bound).
-- [ ] Register in `foreach_tool!` with `with_config` (uses `validate_path`).
+- [x] Reuse the template parser from 1.3 (made `Segment` + `parse_template` + `FormatSpec` `pub(crate)` in `naming::apply_scheme`). Split the parsed template by `/` into "slots" — one per path component.
+- [x] Per-slot matcher walks segments **left-to-right** with `find` for every literal, except the literal immediately preceding a trailing placeholder, which uses `rfind`. That single asymmetry gives `{title}.{ext}` natural extension behavior on titles like `Mr. Brightside.mp3` while keeping multi-capture slots (`{disc}-{track} {title}.{ext}`) on standard left-to-right matching.
+- [x] Refuse adjacent placeholders in the same slot (`{a}{b}`) at template-validation time — undecidable in reverse.
+- [x] Per-file pipeline: walker yields entries, validate_path filters per-entry (root containment + symlink policy), match path against template (mismatches surface as warnings), read tags via lofty (read errors surface as warnings, file kept in directory with empty tags).
+- [x] Group by leaf directory. Histograms are `BTreeMap<field, BTreeMap<value, count>>` for deterministic output. Divergences are case-insensitive by default; whitespace always trimmed; numeric values compared numerically when both parse as i64 (so `01` doesn't diverge from `1` on `:0Nd` fields).
+- [x] Pagination cursor encodes `(last_completed_directory_path, files_scanned, files_with_divergences)`. Directories are never split across pages — when the cap hits mid-directory we bail BEFORE the new directory and the cursor points to the previous one.
+- [x] Hard cap `MAX_FILES = 5000` (aligned with the metadata batch cap).
+- [x] Register in `foreach_tool!` as `with_config` (uses `validate_path`); under a new `harmonisation/` module that will host 4.2 next.
 
-**Acceptance**: integration test on a synthetic tempdir tree:
+**Acceptance**: 17 unit tests (slot matcher edge cases: single placeholder, multi-capture, dot-in-title rfind, missing literal, empty capture, adjacent placeholders refused, wrong component count, directory-vs-file-level captures, divergence detection, numeric padding, template field collection, cursor round-trip). 3 integration tests in `tests/inventory_divergences.rs`: the roadmap's Beatles+Radiohead fixture (writing real ID3v2-tagged WAVs via the singleton write tool) asserting 1 divergence on `artist`; off-template files surfacing as warnings without aborting; cursor resume across 3 directories with `max_files=2` halting after the first and resuming cleanly into the rest. ✅
 
-```
-/Rock/The Beatles/Abbey Road/01 Come Together.mp3   (tags: artist=Beatles)
-/Rock/The Beatles/Abbey Road/02 Something.mp3       (tags: artist=The Beatles)
-/Rock/Radiohead/OK Computer/01 Airbag.mp3           (tags: artist=Radiohead)
-```
-
-Assert: directory `/Rock/The Beatles/Abbey Road` shows `field_value_counts.artist = {"Beatles": 1, "The Beatles": 1}`, file 01 has `divergences: ["artist"]`, file 02 is consistent, the Radiohead directory has no divergences. Use the WAV-fixture trick from `tests/metadata_roundtrip.rs` so the test is hermetic.
-
-**Effort**: 1.5 days.
+**Effort**: 1.5 days. **Status: done (2026-05-20).**
 
 ---
 
@@ -487,17 +478,17 @@ Long-running harmonisation passes need to survive a session crash, a `cargo buil
 ```
 
 **Tasks**:
-- [ ] Validate `id` strictly (allowlist of safe filename chars + length). Reject `..`, `/`, `\`, leading `.`. Reuse `is_safe_filename` from `core::security`.
-- [ ] Cap manifest size (`MAX_MANIFEST_BYTES = 10 MB`) — the agent shouldn't dump the whole library into a manifest.
-- [ ] Writes go through `core::fs_atomic::write_atomic` — partial-write protection is free.
-- [ ] Create the manifest directory on first write (`create_dir_all`).
-- [ ] `manifest_list` reads the directory once, sorts by `written_at` desc. Cap output (`MAX_LIST = 100` most-recent).
-- [ ] `manifest_read` returns a structured `{error: "NotFound"}` rather than an HTTP-level error, so the agent can branch on first-run vs. resume cleanly.
-- [ ] No `manifest_delete` in scope — the user can `rm` the file directly; adding a deletion tool invites accidents.
+- [x] `id` validated against a tighter allowlist than `is_safe_filename`: `[A-Za-z0-9._-]{1,128}`, no leading `.`. Inlined as `is_valid_manifest_id` because the existing helper allows whitespace + unicode which are friction for ids.
+- [x] `MAX_MANIFEST_BYTES = 10 MB` cap on the serialised body.
+- [x] Writes go through `core::fs_atomic::write_atomic`.
+- [x] Manifest dir resolved as `$MCP_MANIFEST_DIR` → `$XDG_CACHE_HOME/music-mcp/manifests` → `$HOME/.cache/music-mcp/manifests`. Created on first write via `create_dir_all`.
+- [x] `manifest_list` reads the dir once, filters `.json` files whose stem passes `is_valid_manifest_id`, sorts by RFC3339 `written_at` desc, caps at `MAX_LIST = 100` with a `truncated` flag.
+- [x] `manifest_read` returns `{id, content: null, written_at: null, bytes: null, error: "NotFound"}` on miss as a structured success — agents distinguish "first run" from "malformed call" without exception handling.
+- [x] No `manifest_delete` (documented in the module-level docstring).
 
-**Acceptance**: integration test that round-trips a non-trivial JSON payload (~500 KB nested object), confirms `manifest_list` shows it, second `manifest_write` with same id overwrites without corruption, `manifest_read` of unknown id returns the `NotFound` shape (not a tool error).
+**Acceptance**: 7 integration tests in `tests/manifests.rs`, scoped per-test with `MCP_MANIFEST_DIR` under a process-global `Mutex` for safe parallel runs: round-trip of a ~500 KB nested payload, overwrite without leftover `.tmp.*`, NotFound shape on a missing id, list sorted by recency, list on missing dir returns empty (not error), invalid ids consistently refused with no leaked files, 11 MB body rejected. 2 unit tests on `is_valid_manifest_id`. ✅
 
-**Effort**: 0.5 day.
+**Effort**: 0.5 day. **Status: done (2026-05-21). Milestone A4 — Harmonised reached.**
 
 ---
 

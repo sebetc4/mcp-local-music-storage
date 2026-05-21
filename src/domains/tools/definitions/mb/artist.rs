@@ -15,7 +15,8 @@ use tracing::{debug, error, info, instrument};
 
 use super::MbBlockingTool;
 use super::common::{
-    default_limit, error_result, extract_year, is_mbid, structured_result, validate_limit,
+    AliasInfo, TagInfo, default_limit, error_result, extract_year, is_mbid, map_aliases, map_tags,
+    resolve_search_query, structured_result, validate_limit,
 };
 
 /// Parameters for artist search operations.
@@ -27,9 +28,10 @@ pub struct MbArtistParams {
     #[schemars(description = "Search type: 'artist' or 'artist_releases'")]
     pub search_type: String,
 
-    /// The search query string or MusicBrainz ID.
+    /// The search query string or MusicBrainz ID. Mutually exclusive with
+    /// `raw_lucene_query`.
     #[schemars(description = r#"
-        Search query (artist name or MBID)
+        Search query (artist name or MBID). Leave empty if using raw_lucene_query.
         IMPORTANT RULES:
         - For artist search: Use ONLY the artist name, nothing else.
         - For artist_releases search: Use ONLY the artist name or artist MBID.
@@ -43,12 +45,37 @@ pub struct MbArtistParams {
           * "The Beatles 1960s" (✘ - contains period)
           * "Nirvana Smells Like Teen Spirit" (✘ - contains track name)
     "#)]
+    #[serde(default)]
     pub query: String,
 
     /// Maximum number of results to return (default: 10, max: 100).
     #[schemars(description = "Maximum number of results (default: 10, max: 100)")]
     #[serde(default = "default_limit")]
     pub limit: usize,
+
+    /// When `true`, enrich every returned artist with its `aliases` list
+    /// (alternate spellings, sort names, locale-specific forms — useful
+    /// for canonisation: "Beatles" ↔ "The Beatles"). Off by default to
+    /// keep the wire payload small for callers that don't need it.
+    /// Ignored by `artist_releases` (which returns releases, not artists).
+    #[serde(default)]
+    pub include_aliases: bool,
+
+    /// When `true`, enrich every returned artist with its `tags` list
+    /// (community folksonomy: genre + style + descriptor tags, sorted by
+    /// upvote count). Off by default. Same scope rules as `include_aliases`
+    /// — ignored by `artist_releases`.
+    #[serde(default)]
+    pub include_tags: bool,
+
+    /// Raw Lucene escape hatch — full MB search syntax (boolean
+    /// operators, field filters, date ranges, fuzzy matches). Only valid
+    /// when `search_type="artist"`; refused for `artist_releases` (which
+    /// is a 2-step name → release lookup, not a free search).
+    /// Mutually exclusive with `query`. Example:
+    /// `artist:radiohead AND country:GB AND begin:[1985 TO 1995]`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_lucene_query: Option<String>,
 }
 
 /// Structured output for artist search results.
@@ -66,6 +93,14 @@ pub struct ArtistSearchInfo {
     pub country: Option<String>,
     pub area: Option<String>,
     pub disambiguation: Option<String>,
+    /// Populated only when the request set `include_aliases=true`. `None`
+    /// otherwise (skipped from JSON output entirely).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aliases: Option<Vec<AliasInfo>>,
+    /// Populated only when `include_tags=true`. Sorted by descending
+    /// upvote count, alphabetical tiebreak.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<TagInfo>>,
 }
 
 /// Structured output for artist releases search results.
@@ -99,8 +134,33 @@ impl MbBlockingTool for MbArtistTool {
     fn execute(params: &MbArtistParams) -> CallToolResult {
         let limit = validate_limit(params.limit);
         match params.search_type.as_str() {
-            "artist" => Self::search_artists(&params.query, limit),
-            "artist_releases" => Self::search_releases_by_artist(&params.query, limit),
+            "artist" => {
+                let resolved =
+                    match resolve_search_query(&params.query, params.raw_lucene_query.as_deref()) {
+                        Ok(q) => q,
+                        Err(e) => return error_result(&e),
+                    };
+                let is_raw = params.raw_lucene_query.is_some();
+                Self::search_artists(
+                    &resolved,
+                    limit,
+                    params.include_aliases,
+                    params.include_tags,
+                    is_raw,
+                )
+            }
+            "artist_releases" => {
+                // `artist_releases` is a 2-step lookup (resolve artist by
+                // name/MBID → list its releases). Raw Lucene queries don't
+                // map to that flow; refuse rather than silently ignore.
+                if params.raw_lucene_query.is_some() {
+                    return error_result(
+                        "raw_lucene_query is not supported for search_type='artist_releases'; \
+                         use search_type='artist' (or pass the artist MBID/name as `query`).",
+                    );
+                }
+                Self::search_releases_by_artist(&params.query, limit)
+            }
             other => error_result(&format!(
                 "Unknown search type: {}. Use 'artist' or 'artist_releases'",
                 other
@@ -111,13 +171,52 @@ impl MbBlockingTool for MbArtistTool {
 
 impl MbArtistTool {
     /// Search for artists by name or fetch by MBID.
-    pub fn search_artists(query: &str, limit: usize) -> CallToolResult {
-        info!("Searching for artists matching: {}", query);
+    ///
+    /// When `include_aliases` is true, the MB call uses `?inc=aliases` and
+    /// each returned artist carries its alternate-spellings list. This
+    /// adds bytes to the payload but does not change the number of MB
+    /// round-trips.
+    ///
+    /// When `is_raw` is true, the MBID-fast-path is skipped: a raw Lucene
+    /// query expresses its own field constraints (e.g. `arid:...`), so
+    /// short-circuiting on a UUID-shaped string would shadow it.
+    pub fn search_artists(
+        query: &str,
+        limit: usize,
+        include_aliases: bool,
+        include_tags: bool,
+        is_raw: bool,
+    ) -> CallToolResult {
+        info!(
+            "Searching for artists matching: {} (aliases={}, tags={}, raw={})",
+            query, include_aliases, include_tags, is_raw
+        );
 
-        // If query is an MBID, fetch directly
-        if is_mbid(query) {
-            match Artist::fetch().id(query).execute() {
+        // If query is an MBID, fetch directly (unless the caller asked for
+        // a raw query — in which case we must not short-circuit).
+        if !is_raw && is_mbid(query) {
+            // Builder methods take `&mut self`, so the binding has to be
+            // mutable and the temporary anchored before we chain anything.
+            let mut fetch = Artist::fetch();
+            fetch.id(query);
+            if include_aliases {
+                fetch.with_aliases();
+            }
+            if include_tags {
+                fetch.with_tags();
+            }
+            match fetch.execute() {
                 Ok(artist) => {
+                    let aliases = if include_aliases {
+                        map_aliases(artist.aliases.as_ref())
+                    } else {
+                        None
+                    };
+                    let tags = if include_tags {
+                        map_tags(artist.tags.as_ref())
+                    } else {
+                        None
+                    };
                     let artist_info = ArtistSearchInfo {
                         name: artist.name.clone(),
                         mbid: artist.id.clone(),
@@ -128,6 +227,8 @@ impl MbArtistTool {
                         } else {
                             Some(artist.disambiguation)
                         },
+                        aliases,
+                        tags,
                     };
 
                     let structured_data = ArtistSearchResult {
@@ -145,11 +246,20 @@ impl MbArtistTool {
                 }
             }
         } else {
-            // Search by name
-            let search_query = ArtistSearchQuery::query_builder().artist(query).build();
-            let search_result = Artist::search(search_query).execute();
-
-            match search_result {
+            // Search by name (or raw Lucene query when is_raw).
+            let final_query = if is_raw {
+                query.to_string()
+            } else {
+                ArtistSearchQuery::query_builder().artist(query).build()
+            };
+            let mut builder = Artist::search(final_query);
+            if include_aliases {
+                builder.with_aliases();
+            }
+            if include_tags {
+                builder.with_tags();
+            }
+            match builder.execute() {
                 Ok(result) => {
                     let artists: Vec<_> = result.entities.into_iter().take(limit).collect();
                     if artists.is_empty() {
@@ -160,6 +270,16 @@ impl MbArtistTool {
                     let artist_infos: Vec<ArtistSearchInfo> = artists
                         .into_iter()
                         .map(|a| ArtistSearchInfo {
+                            aliases: if include_aliases {
+                                map_aliases(a.aliases.as_ref())
+                            } else {
+                                None
+                            },
+                            tags: if include_tags {
+                                map_tags(a.tags.as_ref())
+                            } else {
+                                None
+                            },
                             name: a.name,
                             mbid: a.id,
                             country: a.country.filter(|c| !c.is_empty()),
@@ -287,7 +407,7 @@ mod tests {
     #[ignore]
     #[test]
     fn test_search_artists() {
-        let result = MbArtistTool::search_artists("Nirvana", 5);
+        let result = MbArtistTool::search_artists("Nirvana", 5, false, false, false);
         assert!(
             !result.is_error.unwrap_or(true),
             "Expected success but got error"
@@ -337,7 +457,13 @@ mod tests {
     fn test_search_artists_by_mbid() {
         std::thread::sleep(std::time::Duration::from_millis(1500));
         // Nirvana MBID
-        let result = MbArtistTool::search_artists("5b11f4ce-a62d-471e-81fc-a69a8278c7da", 5);
+        let result = MbArtistTool::search_artists(
+            "5b11f4ce-a62d-471e-81fc-a69a8278c7da",
+            5,
+            false,
+            false,
+            false,
+        );
         assert!(
             !result.is_error.unwrap_or(true),
             "Expected success but got error"

@@ -15,8 +15,9 @@ use tracing::{debug, error, info, instrument};
 
 use super::MbBlockingTool;
 use super::common::{
-    default_limit, error_result, extract_year, format_duration, get_artist_name, is_mbid,
-    release_group_primary_type_str, structured_result, validate_limit,
+    TagInfo, default_limit, error_result, extract_year, format_duration, get_artist_name, is_mbid,
+    map_tags, release_group_primary_type_str, resolve_search_query, structured_result,
+    validate_country_code, validate_limit,
 };
 
 /// Structured output for release search results.
@@ -35,6 +36,10 @@ pub struct ReleaseSearchInfo {
     pub year: Option<String>,
     pub country: Option<String>,
     pub barcode: Option<String>,
+    /// Populated only when `include_tags=true`. Sorted by descending
+    /// upvote count, alphabetical tiebreak.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<TagInfo>>,
 }
 
 /// Structured output for release recordings (track listing).
@@ -78,6 +83,11 @@ pub struct ReleaseGroupSearchInfo {
     pub artist: String,
     pub first_release_year: Option<String>,
     pub primary_type: Option<String>,
+    /// Populated only when `include_tags=true`. Sorted by descending
+    /// upvote count, alphabetical tiebreak. Release-group tags are
+    /// usually more representative of "genre" than per-release tags.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<TagInfo>>,
 }
 
 /// Structured output for release group releases (all versions).
@@ -111,9 +121,10 @@ pub struct MbReleaseParams {
     )]
     pub search_type: String,
 
-    /// The search query string or MusicBrainz ID.
+    /// The search query string or MusicBrainz ID. Mutually exclusive with
+    /// `raw_lucene_query`.
     #[schemars(description = r#"
-        Search query (release or release-group title, or MBID)
+        Search query (release or release-group title, or MBID). Leave empty if using raw_lucene_query.
         CRITICAL RULES FOR SEARCH BY TITLE:
         - The query MUST contain ONLY the exact album/release title, nothing else.
         - DO NOT include artist names, track titles, years, formats, countries, or any additional text.
@@ -130,12 +141,39 @@ pub struct MbReleaseParams {
           * "The Dark Side of the Moon CD" (✘ - contains format)
           * "Nevermind Deluxe Edition" (✘ - unless that's the exact title)
     "#)]
+    #[serde(default)]
     pub query: String,
 
     /// Maximum number of results to return (default: 10, max: 100).
     #[schemars(description = "Maximum number of results (default: 10, max: 100)")]
     #[serde(default = "default_limit")]
     pub limit: usize,
+
+    /// When `true`, enrich every returned release / release-group with
+    /// its `tags` list (community folksonomy, sorted by upvote count).
+    /// Most useful on `release_group` where tags tend to be more
+    /// representative of "genre" than the per-release tags. Ignored by
+    /// the 2-step lookups (`release_recordings`, `release_group_releases`).
+    #[serde(default)]
+    pub include_tags: bool,
+
+    /// Filter releases by country (ISO 3166-1 alpha-2 — e.g. `"US"`,
+    /// `"GB"`, `"JP"`). Lowercase is accepted and uppercased. Pushed
+    /// into the MB query as `country:<code>`. Only valid when
+    /// `search_type="release"`; refused otherwise (release-groups don't
+    /// have a country, and the 2-step lookups resolve an MBID first).
+    /// Also refused alongside `raw_lucene_query` — embed
+    /// `country:<code>` in your raw query instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub country: Option<String>,
+
+    /// Raw Lucene escape hatch. Only valid when `search_type="release"`
+    /// or `"release_group"`; refused for the 2-step lookups
+    /// (`release_recordings`, `release_group_releases`). Mutually
+    /// exclusive with `query`. Example:
+    /// `release:"OK Computer" AND country:US AND date:[1997 TO 1999]`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_lucene_query: Option<String>,
 }
 
 /// MusicBrainz Release Search Tool.
@@ -151,11 +189,80 @@ impl MbBlockingTool for MbReleaseTool {
     #[instrument(skip_all, fields(search_type = %params.search_type, query = %params.query, limit = params.limit))]
     fn execute(params: &MbReleaseParams) -> CallToolResult {
         let limit = validate_limit(params.limit);
+        let raw_provided = params.raw_lucene_query.is_some();
+        let country_provided = params.country.is_some();
         match params.search_type.as_str() {
-            "release" => Self::search_releases(&params.query, limit),
-            "release_group" => Self::search_release_groups(&params.query, limit),
-            "release_recordings" => Self::search_release_recordings(&params.query, limit),
-            "release_group_releases" => Self::search_release_group_releases(&params.query, limit),
+            "release" => {
+                if country_provided && raw_provided {
+                    return error_result(
+                        "country and raw_lucene_query are mutually exclusive — embed \
+                         `country:<code>` in your raw query instead.",
+                    );
+                }
+                let resolved =
+                    match resolve_search_query(&params.query, params.raw_lucene_query.as_deref()) {
+                        Ok(q) => q,
+                        Err(e) => return error_result(&e),
+                    };
+                let country = match params.country.as_deref() {
+                    None => None,
+                    Some(raw) => match validate_country_code(raw) {
+                        Ok(c) => Some(c),
+                        Err(e) => return error_result(&e),
+                    },
+                };
+                Self::search_releases(
+                    &resolved,
+                    limit,
+                    raw_provided,
+                    country.as_deref(),
+                    params.include_tags,
+                )
+            }
+            "release_group" => {
+                if country_provided {
+                    return error_result(
+                        "country filter is not supported for search_type='release_group' \
+                         (release groups don't have a country — use search_type='release').",
+                    );
+                }
+                let resolved =
+                    match resolve_search_query(&params.query, params.raw_lucene_query.as_deref()) {
+                        Ok(q) => q,
+                        Err(e) => return error_result(&e),
+                    };
+                Self::search_release_groups(&resolved, limit, raw_provided, params.include_tags)
+            }
+            "release_recordings" => {
+                if raw_provided {
+                    return error_result(
+                        "raw_lucene_query is not supported for search_type='release_recordings'; \
+                         resolve the release MBID via search_type='release' first.",
+                    );
+                }
+                if country_provided {
+                    return error_result(
+                        "country is not supported for search_type='release_recordings' \
+                         (it's a 2-step MBID lookup, not a search).",
+                    );
+                }
+                Self::search_release_recordings(&params.query, limit)
+            }
+            "release_group_releases" => {
+                if raw_provided {
+                    return error_result(
+                        "raw_lucene_query is not supported for search_type='release_group_releases'; \
+                         resolve the release-group MBID via search_type='release_group' first.",
+                    );
+                }
+                if country_provided {
+                    return error_result(
+                        "country is not supported for search_type='release_group_releases' \
+                         (it's a 2-step MBID lookup, not a search).",
+                    );
+                }
+                Self::search_release_group_releases(&params.query, limit)
+            }
             other => error_result(&format!(
                 "Unknown search type: {}. Use 'release', 'release_group', 'release_recordings', or 'release_group_releases'",
                 other
@@ -166,13 +273,41 @@ impl MbBlockingTool for MbReleaseTool {
 
 impl MbReleaseTool {
     /// Search for releases by title or fetch by MBID.
-    pub fn search_releases(query: &str, limit: usize) -> CallToolResult {
-        info!("Searching for releases matching: {}", query);
+    ///
+    /// - `is_raw=true` sends `query` verbatim as a Lucene search and
+    ///   skips the MBID-fast-path.
+    /// - `country` (when `Some`) is pushed into the typed query as a
+    ///   `country:<code>` filter. The dispatcher already refuses the
+    ///   combination of raw + country, so this only fires on the
+    ///   typed-builder path.
+    /// - `include_tags=true` adds `?inc=tags` and populates the per-result
+    ///   `tags` field.
+    pub fn search_releases(
+        query: &str,
+        limit: usize,
+        is_raw: bool,
+        country: Option<&str>,
+        include_tags: bool,
+    ) -> CallToolResult {
+        info!(
+            "Searching for releases matching: {} (raw={}, country={:?}, tags={})",
+            query, is_raw, country, include_tags
+        );
 
-        // If query is an MBID, fetch directly
-        if is_mbid(query) {
-            match Release::fetch().id(query).execute() {
+        // If query is an MBID, fetch directly (unless raw — see doc-comment).
+        if !is_raw && is_mbid(query) {
+            let mut fetch = Release::fetch();
+            fetch.id(query);
+            if include_tags {
+                fetch.with_tags();
+            }
+            match fetch.execute() {
                 Ok(release) => {
+                    let tags = if include_tags {
+                        map_tags(release.tags.as_ref())
+                    } else {
+                        None
+                    };
                     let release_info = ReleaseSearchInfo {
                         title: release.title.clone(),
                         mbid: release.id.clone(),
@@ -180,6 +315,7 @@ impl MbReleaseTool {
                         year: release.date.as_ref().and_then(|d| extract_year(&d.0)),
                         country: release.country,
                         barcode: release.barcode.filter(|b| !b.is_empty()),
+                        tags,
                     };
 
                     let structured_data = ReleaseSearchResult {
@@ -197,10 +333,22 @@ impl MbReleaseTool {
                 }
             }
         } else {
-            // Search by title
-            let search_query = ReleaseSearchQuery::query_builder().release(query).build();
-
-            let search_result = Release::search(search_query).execute();
+            // Search by title (or raw Lucene query when is_raw).
+            let final_query = if is_raw {
+                query.to_string()
+            } else {
+                let mut qb = ReleaseSearchQuery::query_builder();
+                qb.release(query);
+                if let Some(c) = country {
+                    qb.country(c);
+                }
+                qb.build()
+            };
+            let mut builder = Release::search(final_query);
+            if include_tags {
+                builder.with_tags();
+            }
+            let search_result = builder.execute();
 
             match search_result {
                 Ok(result) => {
@@ -213,6 +361,11 @@ impl MbReleaseTool {
                     let release_infos: Vec<ReleaseSearchInfo> = releases
                         .into_iter()
                         .map(|r| ReleaseSearchInfo {
+                            tags: if include_tags {
+                                map_tags(r.tags.as_ref())
+                            } else {
+                                None
+                            },
                             title: r.title,
                             mbid: r.id,
                             artist: get_artist_name(&r.artist_credit),
@@ -240,13 +393,31 @@ impl MbReleaseTool {
     }
 
     /// Search for release groups by title or fetch by MBID.
-    pub fn search_release_groups(query: &str, limit: usize) -> CallToolResult {
-        info!("Searching for release groups matching: {}", query);
+    pub fn search_release_groups(
+        query: &str,
+        limit: usize,
+        is_raw: bool,
+        include_tags: bool,
+    ) -> CallToolResult {
+        info!(
+            "Searching for release groups matching: {} (raw={}, tags={})",
+            query, is_raw, include_tags
+        );
 
-        // If query is an MBID, fetch directly
-        if is_mbid(query) {
-            match ReleaseGroup::fetch().id(query).execute() {
+        // If query is an MBID, fetch directly (unless raw).
+        if !is_raw && is_mbid(query) {
+            let mut fetch = ReleaseGroup::fetch();
+            fetch.id(query);
+            if include_tags {
+                fetch.with_tags();
+            }
+            match fetch.execute() {
                 Ok(release_group) => {
+                    let tags = if include_tags {
+                        map_tags(release_group.tags.as_ref())
+                    } else {
+                        None
+                    };
                     let group_info = ReleaseGroupSearchInfo {
                         title: release_group.title.clone(),
                         mbid: release_group.id.clone(),
@@ -259,6 +430,7 @@ impl MbReleaseTool {
                             .primary_type
                             .as_ref()
                             .map(release_group_primary_type_str),
+                        tags,
                     };
 
                     let structured_data = ReleaseGroupSearchResult {
@@ -276,12 +448,19 @@ impl MbReleaseTool {
                 }
             }
         } else {
-            // Search by title
-            let search_query = ReleaseGroupSearchQuery::query_builder()
-                .release_group(query)
-                .build();
-
-            let search_result = ReleaseGroup::search(search_query).execute();
+            // Search by title (or raw Lucene query when is_raw).
+            let final_query = if is_raw {
+                query.to_string()
+            } else {
+                ReleaseGroupSearchQuery::query_builder()
+                    .release_group(query)
+                    .build()
+            };
+            let mut builder = ReleaseGroup::search(final_query);
+            if include_tags {
+                builder.with_tags();
+            }
+            let search_result = builder.execute();
 
             match search_result {
                 Ok(result) => {
@@ -297,6 +476,11 @@ impl MbReleaseTool {
                     let group_infos: Vec<ReleaseGroupSearchInfo> = groups
                         .into_iter()
                         .map(|rg| ReleaseGroupSearchInfo {
+                            tags: if include_tags {
+                                map_tags(rg.tags.as_ref())
+                            } else {
+                                None
+                            },
                             title: rg.title,
                             mbid: rg.id,
                             artist: get_artist_name(&rg.artist_credit),
@@ -540,7 +724,7 @@ mod tests {
     #[ignore]
     #[test]
     fn test_search_releases() {
-        let result = MbReleaseTool::search_releases("Nevermind", 5);
+        let result = MbReleaseTool::search_releases("Nevermind", 5, false, None, false);
         assert!(
             !result.is_error.unwrap_or(true),
             "Expected success but got error"

@@ -19,6 +19,7 @@ pub mod identify_record;
 pub mod label;
 pub mod match_from_tags;
 pub mod recording;
+pub mod relations;
 pub mod release;
 pub mod work;
 
@@ -31,5 +32,6 @@ pub use identify_record::MbIdentifyRecordTool;
 pub use label::{MbLabelParams, MbLabelTool};
 pub use match_from_tags::{MbMatchFromTagsParams, MbMatchFromTagsTool};
 pub use recording::{MbRecordingParams, MbRecordingTool};
+pub use relations::{MbRelationsParams, MbRelationsTool};
 pub use release::{MbReleaseParams, MbReleaseTool};
 pub use work::{MbWorkParams, MbWorkTool};

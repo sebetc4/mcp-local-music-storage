@@ -15,7 +15,7 @@ use tracing::{debug, error, info, instrument};
 use super::MbBlockingTool;
 use super::common::{
     default_limit, error_result, extract_year, format_duration, get_artist_name, is_mbid,
-    structured_result, validate_limit,
+    resolve_search_query, structured_result, validate_limit,
 };
 
 /// Parameters for recording search operations.
@@ -27,9 +27,10 @@ pub struct MbRecordingParams {
     #[schemars(description = "Search type: 'recording' or 'recording_releases'")]
     pub search_type: String,
 
-    /// The search query string or MusicBrainz ID.
+    /// The search query string or MusicBrainz ID. Mutually exclusive with
+    /// `raw_lucene_query`.
     #[schemars(description = r#"
-        Search query (recording title or MBID)
+        Search query (recording title or MBID). Leave empty if using raw_lucene_query.
         CRITICAL RULES FOR SEARCH BY TITLE:
         - The query MUST contain ONLY the exact recording/track title, nothing else.
         - DO NOT include artist names, album names, years, formats, or any additional text.
@@ -45,12 +46,20 @@ pub struct MbRecordingParams {
           * "Smells Like Teen Spirit by Nirvana" (✘ - contains artist)
           * "Bohemian Rhapsody from A Night at the Opera" (✘ - contains album)
     "#)]
+    #[serde(default)]
     pub query: String,
 
     /// Maximum number of results to return (default: 10, max: 100).
     #[schemars(description = "Maximum number of results (default: 10, max: 100)")]
     #[serde(default = "default_limit")]
     pub limit: usize,
+
+    /// Raw Lucene escape hatch. Only valid when `search_type="recording"`;
+    /// refused for `recording_releases` (which is a 2-step lookup).
+    /// Mutually exclusive with `query`. Example:
+    /// `recording:imagine AND artist:lennon AND dur:[180000 TO 200000]`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_lucene_query: Option<String>,
 }
 
 /// Structured output for recording search results.
@@ -131,8 +140,24 @@ impl MbBlockingTool for MbRecordingTool {
     fn execute(params: &MbRecordingParams) -> CallToolResult {
         let limit = validate_limit(params.limit);
         match params.search_type.as_str() {
-            "recording" => Self::search_recordings(&params.query, limit),
-            "recording_releases" => Self::search_recording_releases(&params.query, limit),
+            "recording" => {
+                let resolved =
+                    match resolve_search_query(&params.query, params.raw_lucene_query.as_deref()) {
+                        Ok(q) => q,
+                        Err(e) => return error_result(&e),
+                    };
+                let is_raw = params.raw_lucene_query.is_some();
+                Self::search_recordings(&resolved, limit, is_raw)
+            }
+            "recording_releases" => {
+                if params.raw_lucene_query.is_some() {
+                    return error_result(
+                        "raw_lucene_query is not supported for search_type='recording_releases'; \
+                         use search_type='recording' with the raw query, then look up releases separately.",
+                    );
+                }
+                Self::search_recording_releases(&params.query, limit)
+            }
             other => error_result(&format!(
                 "Unknown search type: {}. Use 'recording' or 'recording_releases'",
                 other
@@ -143,14 +168,20 @@ impl MbBlockingTool for MbRecordingTool {
 
 impl MbRecordingTool {
     /// Search for recordings by title or MBID.
-    pub fn search_recordings(query: &str, limit: usize) -> CallToolResult {
-        info!("Searching for recordings matching: {}", query);
+    ///
+    /// `is_raw=true` skips the MBID-fast-path (a raw query expresses its
+    /// own filters; a UUID-shaped string in the raw context might be e.g.
+    /// `arid:<uuid>` rather than a recording MBID).
+    pub fn search_recordings(query: &str, limit: usize, is_raw: bool) -> CallToolResult {
+        info!(
+            "Searching for recordings matching: {} (raw={})",
+            query, is_raw
+        );
 
-        // If the query is a MusicBrainz ID (MBID), fetch the recording directly.
-        if is_mbid(query) {
+        if !is_raw && is_mbid(query) {
             Self::fetch_recording_by_id(query)
         } else {
-            Self::search_recordings_by_title(query, limit)
+            Self::search_recordings_by_title(query, limit, is_raw)
         }
     }
 
@@ -243,13 +274,17 @@ impl MbRecordingTool {
         }
     }
 
-    /// Search for recordings by title.
-    fn search_recordings_by_title(query: &str, limit: usize) -> CallToolResult {
-        let search_query = RecordingSearchQuery::query_builder()
-            .recording(query)
-            .build();
+    /// Search for recordings by title (or raw Lucene query when `is_raw`).
+    fn search_recordings_by_title(query: &str, limit: usize, is_raw: bool) -> CallToolResult {
+        let final_query = if is_raw {
+            query.to_string()
+        } else {
+            RecordingSearchQuery::query_builder()
+                .recording(query)
+                .build()
+        };
 
-        let search_result = Recording::search(search_query).execute();
+        let search_result = Recording::search(final_query).execute();
 
         match search_result {
             Ok(result) => {
@@ -388,7 +423,7 @@ mod tests {
     #[ignore]
     #[test]
     fn test_search_recordings() {
-        let result = MbRecordingTool::search_recordings("Paranoid Android", 5);
+        let result = MbRecordingTool::search_recordings("Paranoid Android", 5, false);
         assert!(
             !result.is_error.unwrap_or(true),
             "Expected success but got error"
@@ -407,7 +442,8 @@ mod tests {
     fn test_search_recordings_by_id() {
         std::thread::sleep(std::time::Duration::from_millis(1500));
         // Specific recording MBID
-        let result = MbRecordingTool::search_recordings("3a909079-a42a-4642-b06f-398bf91f34f4", 5);
+        let result =
+            MbRecordingTool::search_recordings("3a909079-a42a-4642-b06f-398bf91f34f4", 5, false);
         assert!(
             !result.is_error.unwrap_or(true),
             "Expected success but got error"

@@ -3,10 +3,14 @@
 //! This module provides shared functionality like MBID validation,
 //! response formatting, and error handling helpers.
 
+use musicbrainz_rs::entity::alias::Alias;
 use musicbrainz_rs::entity::label::LabelType;
 use musicbrainz_rs::entity::release_group::ReleaseGroupPrimaryType;
+use musicbrainz_rs::entity::tag::Tag;
 use musicbrainz_rs::entity::work::WorkType;
 use rmcp::model::{CallToolResult, Content};
+use schemars::JsonSchema;
+use serde::Serialize;
 use tracing::warn;
 
 /// UUID format: 8-4-4-4-12 hexadecimal characters
@@ -78,6 +82,153 @@ pub fn get_artist_name(
 /// Default limit for search results.
 pub fn default_limit() -> usize {
     10
+}
+
+// ============================================================================
+// Search-query resolution (raw Lucene escape hatch)
+// ============================================================================
+
+/// Pick which input the search call should use: the typed `query`
+/// (already passed through the per-entity query builder upstream) or the
+/// caller-supplied raw Lucene query string.
+///
+/// Contract:
+/// - Exactly one of `(typed, raw)` must be non-empty.
+/// - When `raw` is set, it goes straight to the MB endpoint as the
+///   `query` parameter — caller takes full responsibility for syntax
+///   (boolean operators, field filters, date ranges, fuzzy matches).
+/// - When both are set, the caller probably has a bug (or stale code);
+///   refuse rather than silently picking one.
+///
+/// Returns the string to pass to `Entity::search(...)`.
+pub fn resolve_search_query(typed: &str, raw: Option<&str>) -> Result<String, String> {
+    let typed_set = !typed.trim().is_empty();
+    let raw_set = raw.map(|s| !s.trim().is_empty()).unwrap_or(false);
+    match (typed_set, raw_set) {
+        (false, false) => Err(
+            "Missing query: provide either `query` (typed) or `raw_lucene_query` (Lucene syntax)"
+                .to_string(),
+        ),
+        (true, true) => {
+            Err("Provide exactly one of `query` or `raw_lucene_query`, not both".to_string())
+        }
+        (true, false) => Ok(typed.to_string()),
+        (false, true) => Ok(raw.unwrap_or("").to_string()),
+    }
+}
+
+// ============================================================================
+// Aliases (shared across artist / label / work)
+// ============================================================================
+
+/// Stable wire-format alias summary.
+///
+/// `musicbrainz_rs`'s upstream [`Alias`] type carries some fields we don't
+/// surface (`ended`, `type_id`) and shapes its date wrappers in a way that's
+/// awkward for agents to parse. This struct pins the contract: same field
+/// names across artist / label / work payloads, dates flattened to plain
+/// strings, missing booleans normalised to `false`.
+///
+/// Populated only when the caller passes `include_aliases=true`. When the
+/// flag is off, the outer entity's `aliases` field stays `None` and is
+/// skipped from the JSON output entirely (via `skip_serializing_if`).
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct AliasInfo {
+    /// Display name of the alias (e.g. "Beatles", "The Beatles").
+    pub name: String,
+    /// Sortable form (e.g. "Beatles, The").
+    pub sort_name: String,
+    /// `true` when MB marks this alias as the locale's canonical form. The
+    /// upstream field is `Option<bool>`; absence is treated as `false`.
+    pub primary: bool,
+    /// MB-defined kind: `"Legal name"`, `"Search hint"`, `"Artist name"`,
+    /// etc. Absent for many entries.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alias_type: Option<String>,
+    /// Begin date in MB's `YYYY[-MM[-DD]]` form, when known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub begin: Option<String>,
+    /// End date in MB's `YYYY[-MM[-DD]]` form, when known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end: Option<String>,
+}
+
+/// Map an upstream `Option<Vec<Alias>>` onto our stable `AliasInfo` list.
+/// Returns `None` when the input is `None` (caller didn't ask for aliases
+/// OR the entity has none and the upstream payload elided the field).
+pub fn map_aliases(aliases: Option<&Vec<Alias>>) -> Option<Vec<AliasInfo>> {
+    aliases.map(|list| {
+        list.iter()
+            .map(|a| AliasInfo {
+                name: a.name.clone(),
+                sort_name: a.sort_name.clone(),
+                primary: a.primary.unwrap_or(false),
+                alias_type: a.alias_type.clone(),
+                begin: a.begin.as_ref().map(|d| d.0.clone()),
+                end: a.end.as_ref().map(|d| d.0.clone()),
+            })
+            .collect()
+    })
+}
+
+// ============================================================================
+// Tags (shared across artist / release / release-group)
+// ============================================================================
+
+/// Stable wire-format folksonomy tag summary.
+///
+/// MusicBrainz's per-entity tags are upvote-style: `count` is the number
+/// of users who applied the tag. `score` only appears in search responses
+/// (the engine's relevance ranking, 0-100) — both are surfaced so callers
+/// can decide which to sort by.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct TagInfo {
+    /// The tag string (community-supplied; case as MB stores it).
+    pub name: String,
+    /// Number of users who applied this tag. `None` when MB elided it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub count: Option<i32>,
+}
+
+/// Map an upstream `Option<Vec<Tag>>` onto our stable `TagInfo` list.
+/// Sorts by descending count (then alphabetical) so the most-voted tag
+/// surfaces first — keeps output deterministic across calls regardless
+/// of MB's internal ordering.
+pub fn map_tags(tags: Option<&Vec<Tag>>) -> Option<Vec<TagInfo>> {
+    tags.map(|list| {
+        let mut mapped: Vec<TagInfo> = list
+            .iter()
+            .map(|t| TagInfo {
+                name: t.name.clone(),
+                count: t.count,
+            })
+            .collect();
+        mapped.sort_by(|a, b| {
+            b.count
+                .unwrap_or(0)
+                .cmp(&a.count.unwrap_or(0))
+                .then(a.name.cmp(&b.name))
+        });
+        mapped
+    })
+}
+
+// ============================================================================
+// Country-code validation (ISO 3166-1 alpha-2)
+// ============================================================================
+
+/// Validate an ISO 3166-1 alpha-2 country code: exactly two ASCII uppercase
+/// letters. Lowercase input is uppercased before returning so the caller
+/// gets a normalised value to pass to MB's `country:` filter.
+pub fn validate_country_code(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    if trimmed.len() != 2 || !trimmed.chars().all(|c| c.is_ascii_alphabetic()) {
+        return Err(format!(
+            "Invalid country code '{}': expected ISO 3166-1 alpha-2 (exactly 2 ASCII letters, e.g. 'US', 'GB', 'JP')",
+            raw
+        ));
+    }
+    Ok(trimmed.to_ascii_uppercase())
 }
 
 /// Validate and clamp limit to allowed range (1-100).
@@ -282,6 +433,153 @@ mod tests {
         // Simple-name variant.
         assert_eq!(label_type_str(&LabelType::Distributor), "Distributor");
         assert_eq!(label_type_str(&LabelType::UnrecognizedLabelType), "Unknown");
+    }
+
+    #[test]
+    fn resolve_search_query_picks_typed_when_only_typed_set() {
+        assert_eq!(
+            resolve_search_query("Radiohead", None).unwrap(),
+            "Radiohead"
+        );
+        // Empty raw is treated as absent.
+        assert_eq!(
+            resolve_search_query("Radiohead", Some("")).unwrap(),
+            "Radiohead"
+        );
+        assert_eq!(
+            resolve_search_query("Radiohead", Some("   ")).unwrap(),
+            "Radiohead"
+        );
+    }
+
+    #[test]
+    fn resolve_search_query_picks_raw_when_only_raw_set() {
+        assert_eq!(
+            resolve_search_query("", Some("artist:radiohead AND date:[1995 TO 2000]")).unwrap(),
+            "artist:radiohead AND date:[1995 TO 2000]"
+        );
+        // Whitespace-only typed is treated as absent.
+        assert_eq!(resolve_search_query("   ", Some("foo")).unwrap(), "foo");
+    }
+
+    #[test]
+    fn resolve_search_query_refuses_both() {
+        let err = resolve_search_query("Radiohead", Some("artist:radiohead")).unwrap_err();
+        assert!(err.contains("exactly one"), "got: {}", err);
+    }
+
+    #[test]
+    fn resolve_search_query_refuses_neither() {
+        let err = resolve_search_query("", None).unwrap_err();
+        assert!(err.contains("Missing query"), "got: {}", err);
+        let err = resolve_search_query("  ", Some("")).unwrap_err();
+        assert!(err.contains("Missing query"), "got: {}", err);
+    }
+
+    #[test]
+    fn map_tags_sorts_by_count_then_alpha() {
+        let upstream = vec![
+            Tag {
+                name: "rock".to_string(),
+                count: Some(50),
+                score: None,
+            },
+            Tag {
+                name: "alternative".to_string(),
+                count: Some(50),
+                score: None,
+            },
+            Tag {
+                name: "experimental".to_string(),
+                count: Some(20),
+                score: None,
+            },
+            Tag {
+                // Missing count must not panic; treated as 0 for ordering.
+                name: "obscure".to_string(),
+                count: None,
+                score: None,
+            },
+        ];
+        let mapped = map_tags(Some(&upstream)).unwrap();
+        // Tie on count=50 → alphabetical: "alternative" before "rock".
+        assert_eq!(mapped[0].name, "alternative");
+        assert_eq!(mapped[1].name, "rock");
+        assert_eq!(mapped[2].name, "experimental");
+        // None count sorts last.
+        assert_eq!(mapped[3].name, "obscure");
+    }
+
+    #[test]
+    fn map_tags_handles_none_and_empty() {
+        assert!(map_tags(None).is_none());
+        let empty: Vec<Tag> = Vec::new();
+        let mapped = map_tags(Some(&empty)).unwrap();
+        assert!(mapped.is_empty());
+    }
+
+    #[test]
+    fn validate_country_code_accepts_well_formed() {
+        assert_eq!(validate_country_code("US").unwrap(), "US");
+        // Lowercase is uppercased.
+        assert_eq!(validate_country_code("gb").unwrap(), "GB");
+        // Surrounding whitespace is trimmed.
+        assert_eq!(validate_country_code("  jp  ").unwrap(), "JP");
+    }
+
+    #[test]
+    fn validate_country_code_rejects_malformed() {
+        assert!(validate_country_code("").is_err());
+        assert!(validate_country_code("U").is_err()); // too short
+        assert!(validate_country_code("USA").is_err()); // too long
+        assert!(validate_country_code("U1").is_err()); // digits
+        assert!(validate_country_code("éé").is_err()); // non-ASCII
+    }
+
+    #[test]
+    fn map_aliases_handles_none_and_empty() {
+        assert!(map_aliases(None).is_none());
+        let empty: Vec<Alias> = Vec::new();
+        let mapped = map_aliases(Some(&empty)).unwrap();
+        assert!(mapped.is_empty());
+    }
+
+    #[test]
+    fn map_aliases_normalises_fields() {
+        use musicbrainz_rs::entity::date_string::DateString;
+        let upstream = vec![
+            Alias {
+                name: "The Beatles".to_string(),
+                sort_name: "Beatles, The".to_string(),
+                primary: Some(true),
+                alias_type: Some("Artist name".to_string()),
+                begin: Some(DateString("1960".to_string())),
+                end: None,
+                ..Default::default()
+            },
+            Alias {
+                // Absent `primary` must surface as `false`, not panic.
+                name: "Beatles".to_string(),
+                sort_name: "Beatles".to_string(),
+                primary: None,
+                alias_type: None,
+                begin: None,
+                end: None,
+                ..Default::default()
+            },
+        ];
+        let mapped = map_aliases(Some(&upstream)).unwrap();
+        assert_eq!(mapped.len(), 2);
+
+        assert_eq!(mapped[0].name, "The Beatles");
+        assert_eq!(mapped[0].sort_name, "Beatles, The");
+        assert!(mapped[0].primary);
+        assert_eq!(mapped[0].alias_type.as_deref(), Some("Artist name"));
+        assert_eq!(mapped[0].begin.as_deref(), Some("1960"));
+        assert!(mapped[0].end.is_none());
+
+        assert!(!mapped[1].primary);
+        assert!(mapped[1].alias_type.is_none());
     }
 
     #[test]

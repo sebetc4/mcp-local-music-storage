@@ -184,8 +184,11 @@ impl ApplyNamingSchemeTool {
 // Template parsing & evaluation
 // ============================================================================
 
+/// Parsed template segment. `pub(crate)` so the inventory tool (4.1) can
+/// drive the same template DSL in reverse (path → captures) without
+/// re-implementing the parser.
 #[derive(Debug, PartialEq, Eq)]
-enum Segment {
+pub(crate) enum Segment {
     Literal(String),
     Placeholder {
         name: String,
@@ -198,12 +201,15 @@ enum Segment {
 /// supported — that's what naming schemes actually need (`disc:02d`,
 /// `track:02d`). Adding more variants here is cheap if a future need arises.
 #[derive(Debug, PartialEq, Eq)]
-enum FormatSpec {
+pub(crate) enum FormatSpec {
     /// `:Nd` or `:0Nd` — width N, zero-padded.
     ZeroPadInt(usize),
 }
 
-fn parse_template(template: &str) -> Result<Vec<Segment>, String> {
+/// Parse a template into a sequence of literals and placeholders. Used in
+/// both directions: forward (substitute → string) by the naming tool, and
+/// reverse (string → captures) by the inventory tool.
+pub(crate) fn parse_template(template: &str) -> Result<Vec<Segment>, String> {
     let mut segments = Vec::new();
     let mut literal = String::new();
     let mut chars = template.chars().peekable();

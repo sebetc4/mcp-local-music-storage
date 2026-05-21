@@ -14,20 +14,36 @@ use tracing::{error, info, instrument};
 
 use super::MbBlockingTool;
 use super::common::{
-    default_limit, error_result, structured_result, validate_limit, work_type_str,
+    AliasInfo, default_limit, error_result, map_aliases, resolve_search_query, structured_result,
+    validate_limit, work_type_str,
 };
 
 /// Parameters for work search operations.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct MbWorkParams {
-    /// The search query string (work title).
-    #[schemars(description = "Search query (work title)")]
+    /// The search query string (work title). Mutually exclusive with
+    /// `raw_lucene_query`.
+    #[schemars(description = "Search query (work title) — leave empty if using raw_lucene_query")]
+    #[serde(default)]
     pub query: String,
 
     /// Maximum number of results to return (default: 10, max: 100).
     #[schemars(description = "Maximum number of results (default: 10, max: 100)")]
     #[serde(default = "default_limit")]
     pub limit: usize,
+
+    /// When `true`, enrich every returned work with its `aliases` list
+    /// (translated titles, abbreviated forms — most useful for classical
+    /// repertoire where "Symphony No. 5" / "5e Symphonie" / "Symphonie
+    /// Nr. 5" are the same work). Off by default.
+    #[serde(default)]
+    pub include_aliases: bool,
+
+    /// Raw Lucene escape hatch. Bypasses the typed `work:` builder; sent
+    /// verbatim. Mutually exclusive with `query`. Example:
+    /// `type:symphony AND lang:eng`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_lucene_query: Option<String>,
 }
 
 /// Structured output for work search results.
@@ -45,6 +61,9 @@ pub struct WorkInfo {
     pub work_type: Option<String>,
     pub disambiguation: Option<String>,
     pub language: Option<String>,
+    /// Populated only when `include_aliases=true`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aliases: Option<Vec<AliasInfo>>,
 }
 
 /// MusicBrainz Work Search Tool — unit struct used as a [`MbBlockingTool`] impl host.
@@ -62,19 +81,45 @@ impl MbBlockingTool for MbWorkTool {
 
     #[instrument(skip_all, fields(query = %params.query, limit = params.limit))]
     fn execute(params: &MbWorkParams) -> CallToolResult {
-        Self::search_works(&params.query, validate_limit(params.limit))
+        let resolved = match resolve_search_query(&params.query, params.raw_lucene_query.as_deref())
+        {
+            Ok(q) => q,
+            Err(e) => return error_result(&e),
+        };
+        let is_raw = params.raw_lucene_query.is_some();
+        Self::search_works(
+            &resolved,
+            validate_limit(params.limit),
+            params.include_aliases,
+            is_raw,
+        )
     }
 }
 
 impl MbWorkTool {
-    /// Search for works by title.
-    pub fn search_works(query: &str, limit: usize) -> CallToolResult {
-        info!("Searching for works matching: {}", query);
+    /// Search for works. `is_raw=true` sends the query verbatim; otherwise
+    /// goes through the typed `work:` builder.
+    pub fn search_works(
+        query: &str,
+        limit: usize,
+        include_aliases: bool,
+        is_raw: bool,
+    ) -> CallToolResult {
+        info!(
+            "Searching for works matching: {} (aliases={}, raw={})",
+            query, include_aliases, is_raw
+        );
 
-        let search_query = WorkSearchQuery::query_builder().work(query).build();
-        let search_result = Work::search(search_query).execute();
-
-        match search_result {
+        let final_query = if is_raw {
+            query.to_string()
+        } else {
+            WorkSearchQuery::query_builder().work(query).build()
+        };
+        let mut builder = Work::search(final_query);
+        if include_aliases {
+            builder.with_aliases();
+        }
+        match builder.execute() {
             Ok(result) => {
                 let works: Vec<_> = result.entities.into_iter().take(limit).collect();
                 if works.is_empty() {
@@ -85,6 +130,11 @@ impl MbWorkTool {
                 let work_infos: Vec<WorkInfo> = works
                     .into_iter()
                     .map(|w| WorkInfo {
+                        aliases: if include_aliases {
+                            map_aliases(w.aliases.as_ref())
+                        } else {
+                            None
+                        },
                         title: w.title,
                         mbid: w.id,
                         work_type: w.work_type.as_ref().map(work_type_str),
@@ -126,7 +176,7 @@ mod tests {
     #[ignore]
     #[test]
     fn test_search_works() {
-        let result = MbWorkTool::search_works("Bohemian Rhapsody", 5);
+        let result = MbWorkTool::search_works("Bohemian Rhapsody", 5, false, false);
         assert!(
             !result.is_error.unwrap_or(true),
             "Expected success but got error"
